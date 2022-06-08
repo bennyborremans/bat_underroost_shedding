@@ -1,0 +1,620 @@
+---
+title: "Bat virus underroost shedding model"
+author: "Benny Borremans"
+output:
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+    df_print: paged
+---
+
+```{r global_options, include = FALSE,results='hide'}
+knitr::opts_chunk$set(echo = FALSE, results = 'hide',warning = FALSE, message = FALSE,tidy.opts=list(width.cutoff=90),fig.height=4,fig.width=4,dev='pdf',fig.align='center',out.width = "70%")
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))  # set file folder as working directory, need to save file first
+
+library(tidyverse) # data handling
+library(ggplot2) # plotting
+library(patchwork) # combine plots
+library(RColorBrewer) # use color palette brewer
+library(lubridate)   # date manipulations
+library(MASS) # fit distributions 
+
+# set colors for plots 
+col.no.groups = brewer.pal(n = 11,"RdYlBu")[4]
+col.2.groups = brewer.pal(n = 11,"RdYlBu")[c(1,10)]
+col.4.groups = brewer.pal(n = 11,"RdYlBu")[c(1,4,8,11)]
+
+
+
+
+```
+
+\vspace{20pt}
+
+[bennyborremans@bbresearch.org](mailto:bennyborremans@bbresearch.org){.email}
+
+\vspace{10pt}
+
+Last update: `r format(Sys.Date(),"%d %b %Y")`.
+
+\vspace{10pt}
+
+The table of contents can be clicked to jump straight to specific sections.
+
+
+\pagebreak   
+
+Goal = create a model of underroost bat virus shedding.    
+
+Sheets placed below roosts collect urine from an estimated number of bats.   
+Urine samples on the sheet are pooled, and tested for RNA concentration using RT-PCR.   
+Total sample volume depend on the number and volume of urine droplets on the sheets.    
+The number and species of bats above the sheet are estimated, but not all bats can always be observed, and bats can move after/before observation.   
+Samples are stored in one of two buffers (AVL/VTM), or without buffer (NB).   
+Buffer type affects PCR sensitivity.    
+
+The end result (Ct value in a pooled sample) depends on all these factors,    
+which makes it difficult to estimate shedding prevalence in the population.   
+
+The goal of this project is two-fold:    
+(1) Create a simulation model of the different processes that are believed to be involved, to get better insights and build intuition.    
+(2) Create a model to estimate shedding prevalence in the population from the available data, capturing as much of the observation process as reasonably possible.    
+
+
+
+# Simulation model     
+
+
+\pagebreak
+
+
+## Model number of bats above a sheet   
+
+
+```{r}
+# import data from database:
+# library(PREEMPTdatabase)
+# dbcon = preempt_database_connect("bennyborremans_preempt_creds.txt")
+# b0 = australia_underroost(dbcon)
+# saveRDS(b0,"australia_underroost_downloaded_20220607.RDS")
+
+b0 = readRDS("australia_underroost_downloaded_20220607.RDS")
+
+# explanation of columns:
+# preempt_data_dictionary()
+b0.dict = read.csv("preempt_database_data_dictionary_australia_underroost.csv",stringsAsFactors = F)
+
+
+# extract site from accession id (the site column is mostly empty so overwriting)
+b0$site = substr(b0$accession_update,start = 3,stop = 5)
+
+b0$date = as.Date(b0$date)
+
+# add season
+b0$season = NA
+b0$season[which(month(b0$date) %in% c(12,1,2))] = "summer"
+b0$season[which(month(b0$date) %in% c(3,4,5))] = "autumn"
+b0$season[which(month(b0$date) %in% c(6,7,8))] = "winter"
+b0$season[which(month(b0$date) %in% c(9,10,11))] = "spring"
+table(b0$season)
+
+```
+
+\vspace{50pt}   
+
+
+### Observed counts and species    
+
+There are counts for 2 species, black flying foxes and grey-headed flying foxes.    
+Counts can be morning, afternoon, and/or overall.    
+Observations have a level of confidence in the count and/or species.   
+These confidence levels are available for bff only (\textcolor{blue}{do they cover both bff and ghff, or bff only?}).    
+
+
+\vspace{10pt}   
+
+Using only observations with a high level of confidence.    
+Using only morning observations (as these seem to be the most common).    
+Removing observations that are not exact (e.g. "5+").    
+All sites pooled.     
+
+\vspace{10pt}   
+
+```{r}
+b1 = b0 %>%
+       mutate(bff_conf.num = as.numeric(bff_conf)) %>%  # change to numeric
+       filter(bff_conf.num == 1) %>%    # only keep confidence level 1
+       mutate(bffm.count = as.numeric(bffm)) %>%    # change to numeric, so entries like "5+" become NA
+       filter(is.finite(bffm.count)) %>%    # only keep non-NA
+       mutate(ghffm.count = as.numeric(ghffm)) %>%   # change to numeric
+       mutate(total.count = bffm.count + ghffm.count)   # sum bff and ghff counts
+
+
+
+```
+
+\vspace{20pt}    
+
+Histograms of counts:    
+
+\vspace{20pt}    
+
+```{r fig.width = 15, fig.height = 5, out.width = "90%"}
+
+plot1 = ggplot(data = b1, aes(bffm.count)) +
+       geom_histogram(binwidth = 1, fill = col.2.groups[1], color = "black") +
+       ggtitle("bff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot2 = ggplot(data = b1, aes(ghffm.count)) +
+       geom_histogram(binwidth = 1, fill = col.2.groups[2], color = "black") +
+       ggtitle("ghff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot3 = ggplot(data = b1, aes(total.count)) +
+       geom_histogram(binwidth = 1, fill = col.no.groups, color = "black") +
+       ggtitle("bff + ghff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+plot1 + plot2 + plot3
+
+```
+
+
+\vspace{20pt}   
+
+
+Are higher numbers actually more rare, or just more uncertain?    
+
+==> check lower confidence counts.     
+
+
+```{r}
+b2 = b0 %>%
+       mutate(bff_conf.num = as.numeric(bff_conf)) %>%  # change to numeric
+       filter(bff_conf %in% c(0,0.5,2)) %>%    # only keep confidence level 1
+       mutate(bffm.count = as.numeric(bffm)) %>%    # change to numeric, so entries like "5+" become NA
+       filter(is.finite(bffm.count)) %>%    # only keep non-NA
+       mutate(ghffm.count = as.numeric(ghffm)) %>%   # change to numeric
+       mutate(total.count = bffm.count + ghffm.count)   # sum bff and ghff counts
+
+
+```
+
+\vspace{20pt}    
+
+Histograms of counts:    
+
+\vspace{20pt}    
+
+```{r fig.width = 15, fig.height = 5, out.width = "90%"}
+
+plot1 = ggplot(data = b2, aes(bffm.count)) +
+       geom_histogram(binwidth = 1, fill = col.2.groups[1], color = "black") +
+       ggtitle("bff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot2 = ggplot(data = b2, aes(ghffm.count)) +
+       geom_histogram(binwidth = 1, fill = col.2.groups[2], color = "black") +
+       ggtitle("ghff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot3 = ggplot(data = b2, aes(total.count)) +
+       geom_histogram(binwidth = 1, fill = col.no.groups, color = "black") +
+       ggtitle("bff + ghff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+plot1 + plot2 + plot3
+
+```
+
+\vspace{20pt}   
+
+Lower-confidence counts are not higher, except for 2 ghff counts.    
+
+
+
+
+\vspace{20pt}   
+
+
+Are higher numbers actually more rare, or just written down as N+?    
+
+
+```{r}
+
+b4 = b0[grep("+", b0$bffm, fixed = T),]
+
+```
+
+Not likely, there are only `r nrow(b4)` entries with a + sign,  
+and these are one of: `r unique(b4$bffm)`.    
+
+
+\pagebreak 
+
+Are there differences between sites?    
+
+
+\vspace{20pt}   
+
+Using only sites with more than 100 observations.    
+
+
+```{r}
+site.freq = as.data.frame(table(b1$site))
+site.over.100 = droplevels(site.freq$Var1[which(site.freq$Freq>100)])
+```
+
+```{r fig.width = 15, fig.height = 10, out.width = "90%"}
+
+ggplot(data = b1[which(b1$site %in% site.over.100),], aes(bffm.count)) +
+       geom_histogram(binwidth = 1, fill = col.2.groups[1], color = "black") +
+       ggtitle("bff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm")) +
+       facet_wrap(~ site)
+
+
+ggplot(data = b1[which(b1$site %in% site.over.100),], aes(ghffm.count)) +
+       geom_histogram(binwidth = 1, fill = col.2.groups[2], color = "black") +
+       ggtitle("ghff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm")) +
+       facet_wrap(~ site)
+
+
+```
+
+
+\vspace{20pt}
+
+
+==> all look very similar, except many more 0 counts at CLU.   
+\textcolor{blue}{Any reason for this? Different conditions?}       
+I didn't find anything in the notes, and the "bats" column mostly says "stable".    
+
+
+```{r}
+# View(b1[which(b1$site=="CLU"),])
+```
+
+
+\vspace{50pt}   
+
+Any difference between seasons?    
+
+Histograms for different seasons.    
+bff only, most data available, don't need figure overload.    
+
+```{r fig.width = 14, fig.height = 8, out.width = "60%"}
+ggplot(data = b1, aes(bffm.count)) +
+       geom_histogram(binwidth = 1, fill = col.2.groups[1], color = "black") +
+       ggtitle("bff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm")) +
+       facet_wrap(~ season)
+```
+
+\vspace{20pt}   
+
+There seems to be an effect of season, that probably should be taken into account.    
+
+While spring and summer look like Poisson distributions,  
+autumn and winter seem closer to a mixture of a Bernoulli and a Poisson (probability of seeing any bats + if there are bats, how many).     
+
+
+
+\vspace{50pt}   
+
+The distributions look like Poisson, which is convenient.    
+==> fit Poisson distributions.    
+
+\vspace{20pt} 
+
+All bff data pooled, across seasons and sites:        
+
+```{r}
+fit.pois1 = fitdistr(b1$bffm.count, densfun = "poisson")
+```
+
+Lambda = `r as.numeric(fit.pois1$estimate)`.    
+
+Fitted distribution:    
+
+```{r fig.width = 10, fig.height = 7, out.width = "40%"}
+
+fit.plot = data.frame(x = 0:20,
+                      y = dpois(x = 0:20, fit.pois1$estimate))
+
+ggplot(data = b1, aes(bffm.count)) +
+       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
+       ggtitle("bff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+```
+
+
+\vspace{20pt} 
+
+All bff data pooled, per season, across all sites:        
+
+```{r}
+fit.pois1.spring = fitdistr(b1$bffm.count[which(b1$season=="spring")], densfun = "poisson")
+fit.pois1.summer = fitdistr(b1$bffm.count[which(b1$season=="summer")], densfun = "poisson")
+fit.pois1.autumn = fitdistr(b1$bffm.count[which(b1$season=="autumn")], densfun = "poisson")
+fit.pois1.winter = fitdistr(b1$bffm.count[which(b1$season=="winter")], densfun = "poisson")
+
+fit.pois1.seasons = data.frame(season = c("spring","summer","autumn","winter"),
+                               lambda = c(fit.pois1.spring$estimate, fit.pois1.summer$estimate, fit.pois1.autumn$estimate, fit.pois1.winter$estimate))
+```
+
+
+
+Fitted distributions:    
+
+```{r fig.width = 10, fig.height = 7, out.width = "60%"}
+
+fit.plot = data.frame(x = 0:20,
+                      y = dpois(x = 0:20, fit.pois1.spring$estimate))
+
+plot1 = ggplot(data = b1[which(b1$season=="spring"),], aes(bffm.count)) +
+       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
+       ggtitle("bff - spring") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+fit.plot = data.frame(x = 0:20,
+                      y = dpois(x = 0:20, fit.pois1.summer$estimate))
+
+plot2 = ggplot(data = b1[which(b1$season=="summer"),], aes(bffm.count)) +
+       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
+       ggtitle("bff - summer") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+fit.plot = data.frame(x = 0:20,
+                      y = dpois(x = 0:20, fit.pois1.autumn$estimate))
+
+plot3 = ggplot(data = b1[which(b1$season=="autumn"),], aes(bffm.count)) +
+       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
+       ggtitle("bff - autumn") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+fit.plot = data.frame(x = 0:20,
+                      y = dpois(x = 0:20, fit.pois1.winter$estimate))
+
+plot4 = ggplot(data = b1[which(b1$season=="winter"),], aes(bffm.count)) +
+       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
+       ggtitle("bff - winter") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+(plot1 + plot2) /
+       (plot3 + plot4)
+```
+
+
+All combined:    
+
+```{r fig.width = 11, fig.height = 6}
+fit.plot = data.frame(x = rep(0:20,5),
+                      y = c(dpois(x = 0:20, fit.pois1$estimate),
+                            dpois(x = 0:20, fit.pois1.spring$estimate),
+                            dpois(x = 0:20, fit.pois1.summer$estimate),
+                            dpois(x = 0:20, fit.pois1.autumn$estimate),
+                            dpois(x = 0:20, fit.pois1.winter$estimate)),
+                      season = rep(c("all","spring", "summer", "autumn", "winter"), each = 21))
+
+ggplot(data = fit.plot, aes(x = x, y = y, color = season)) +
+       geom_line(size = 1) +
+       scale_color_manual(values = c("black",brewer.pal(n = 11,"RdYlBu")[c(1,3,5,10)]), name = "") +
+       ggtitle("bff") +
+       xlab("Count") +
+       ylab("Probability density") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+```
+
+\vspace{20pt}   
+
+==> when using only a Poisson distribution, they are very similar across seasons.    
+While it is clear that in autumn and winter there seems to be a mixture of distributions,    
+for the purposes of the simulation we can probably keep it simple and stick to a Poisson.    
+
+**Conclusion:**     
+Bat count can be modeled adequately using a Poisson distribution, with:    
+$N_{bats} \sim Poisson(`r round(fit.pois1$estimate,1)`)$   
+
+
+
+\pagebreak
+
+
+
+
+### Correlation counts and sample volume    
+
+
+How are sample volumne and the number of bats related?    
+More bats = more urine, but how strong is this correlation, and what is its shape?    
+
+Considerations that need to be made when looking at this:    
+- There can be evaporation.    
+- The sample is added to buffer (how is this recorded in the data?)    
+
+
+
+\vspace{50pt} 
+
+How much urine can different numbers of bats produce?    
+What is the variation in collected urine volume, given a certain bat count?    
+
+And for each bat count, how does evaporation affect the distribution of volumes?    
+
+How common is evaporation in each season?    
+
+==> histograms    
+==> regression model volume ~ bat_count + evaporation    
+
+
+\vspace{20pt} 
+
+(using only confidence level = 1 data)    
+
+```{r}
+
+ggplot(data = b1, aes(bffm.count)) +
+       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
+       ggtitle("bff - winter") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+```
+
+
+
+
+
+\vspace{50pt}   
+
+# Prevalence estimation model    
+
+```{r}
+
+```
+
+
+
+
+
