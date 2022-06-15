@@ -22,6 +22,9 @@ library(patchwork) # combine plots
 library(RColorBrewer) # use color palette brewer
 library(lubridate)   # date manipulations
 library(MASS) # fit distributions 
+library(brms)   # bayesian regression models with stan, through brms   
+library(rstan)   # bayesian regression models with stan, through rstan
+
 
 # set colors for plots 
 col.no.groups = brewer.pal(n = 11,"RdYlBu")[4]
@@ -94,7 +97,16 @@ b0$site = substr(b0$accession_update,start = 3,stop = 5)
 
 b0$date = as.Date(b0$date)
 
-# add season
+b0$urine_vol_num = as.numeric(b0$urine_vol)
+b0$urine_avl_vol_1_num = as.numeric(b0$urine_avl_vol)
+b0$urine_avl_vol_2_num = as.numeric(b0$urine_avl_vol_2)
+b0$urine_vtm_vol_1_num = as.numeric(b0$urine_vtm_vol_1)
+b0$urine_vtm_vol_2_num = as.numeric(b0$urine_vtm_vol_2)
+
+b0$evap[which(b0$evap %in% c("NA","NR","NC","UK"))] = NA
+b0$evap[which(b0$evap == "pevap")] = "partial"
+b0$evap[which(b0$evap == "evap")] = "full"
+
 b0$season = NA
 b0$season[which(month(b0$date) %in% c(12,1,2))] = "summer"
 b0$season[which(month(b0$date) %in% c(3,4,5))] = "autumn"
@@ -106,8 +118,6 @@ table(b0$season)
 
 \vspace{50pt}   
 
-
-### Observed counts and species    
 
 There are counts for 2 species, black flying foxes and grey-headed flying foxes.    
 Counts can be morning, afternoon, and/or overall.    
@@ -378,12 +388,17 @@ There seems to be an effect of season, that probably should be taken into accoun
 While spring and summer look like Poisson distributions,  
 autumn and winter seem closer to a mixture of a Bernoulli and a Poisson (probability of seeing any bats + if there are bats, how many).     
 
+==> Fit model to positive counts only, as simulating 0 bats will not be useful.    
+
+```{r}
+b1 = b1 %>%
+       filter(bffm.count > 0)
+```
 
 
 \vspace{50pt}   
 
-The distributions look like Poisson, which is convenient.    
-==> fit Poisson distributions.    
+Try Poisson distribution    
 
 \vspace{20pt} 
 
@@ -393,18 +408,53 @@ All bff data pooled, across seasons and sites:
 fit.pois1 = fitdistr(b1$bffm.count, densfun = "poisson")
 ```
 
+
 Lambda = `r as.numeric(fit.pois1$estimate)`.    
 
 Fitted distribution:    
 
 ```{r fig.width = 10, fig.height = 7, out.width = "40%"}
 
-fit.plot = data.frame(x = 0:20,
-                      y = dpois(x = 0:20, fit.pois1$estimate))
+fit.plot = data.frame(x = 1:20,
+                      y = dpois(x = 1:20, fit.pois1$estimate))
 
 ggplot(data = b1, aes(bffm.count)) +
        geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
-       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 1) +
+       ggtitle("bff") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = 0:50) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+```
+
+This distribution fits pretty well for the lower counts, but does not allow for the occasional higher numbers.    
+
+==> try a distribution with some more variance: negative binomial.    
+
+
+All bff data pooled, across seasons and sites:        
+
+```{r}
+fit.negbin1 = fitdistr(b1$bffm.count, densfun = "negative binomial")
+```
+
+
+Fitted distribution:    
+
+```{r fig.width = 10, fig.height = 7, out.width = "40%"}
+
+fit.plot = data.frame(x = 1:20,
+                      y = dnbinom(x = 1:20, size =  fit.negbin1$estimate[1], mu = fit.negbin1$estimate[2]))
+
+ggplot(data = b1, aes(bffm.count)) +
+       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
+       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 1) +
        ggtitle("bff") +
        xlab("Observed count") +
        ylab("Frequency count") +
@@ -418,18 +468,26 @@ ggplot(data = b1, aes(bffm.count)) +
 ```
 
 
+
+==> almost no difference, but a marginally wider tail for the negative binomial distribution.    
+
+A distribution with a heavier tail would be a bit better, but for the simulation we can use the negative binomial distribution.    
+
+
+
 \vspace{20pt} 
 
 All bff data pooled, per season, across all sites:        
 
 ```{r}
-fit.pois1.spring = fitdistr(b1$bffm.count[which(b1$season=="spring")], densfun = "poisson")
-fit.pois1.summer = fitdistr(b1$bffm.count[which(b1$season=="summer")], densfun = "poisson")
-fit.pois1.autumn = fitdistr(b1$bffm.count[which(b1$season=="autumn")], densfun = "poisson")
-fit.pois1.winter = fitdistr(b1$bffm.count[which(b1$season=="winter")], densfun = "poisson")
+fit.negbin1.spring = fitdistr(b1$bffm.count[which(b1$season=="spring")], densfun = "negative binomial")
+fit.negbin1.summer = fitdistr(b1$bffm.count[which(b1$season=="summer")], densfun = "negative binomial")
+fit.negbin1.autumn = fitdistr(b1$bffm.count[which(b1$season=="autumn")], densfun = "negative binomial")
+fit.negbin1.winter = fitdistr(b1$bffm.count[which(b1$season=="winter")], densfun = "negative binomial")
 
-fit.pois1.seasons = data.frame(season = c("spring","summer","autumn","winter"),
-                               lambda = c(fit.pois1.spring$estimate, fit.pois1.summer$estimate, fit.pois1.autumn$estimate, fit.pois1.winter$estimate))
+fit.negbin1.seasons = data.frame(season = c("spring","summer","autumn","winter"),
+                               size = c(fit.negbin1.spring$estimate[1], fit.negbin1.summer$estimate[1], fit.negbin1.autumn$estimate[1], fit.negbin1.winter$estimate[1]),
+                               mu = c(fit.negbin1.spring$estimate[2], fit.negbin1.summer$estimate[2], fit.negbin1.autumn$estimate[2], fit.negbin1.winter$estimate[2]))
 ```
 
 
@@ -438,8 +496,8 @@ Fitted distributions:
 
 ```{r fig.width = 10, fig.height = 7, out.width = "60%"}
 
-fit.plot = data.frame(x = 0:20,
-                      y = dpois(x = 0:20, fit.pois1.spring$estimate))
+fit.plot = data.frame(x = 1:20,
+                      y = dnbinom(x = 1:20, size = fit.negbin1.spring$estimate[1], mu = fit.negbin1.spring$estimate[2]))
 
 plot1 = ggplot(data = b1[which(b1$season=="spring"),], aes(bffm.count)) +
        geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
@@ -455,8 +513,8 @@ plot1 = ggplot(data = b1[which(b1$season=="spring"),], aes(bffm.count)) +
              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
 
-fit.plot = data.frame(x = 0:20,
-                      y = dpois(x = 0:20, fit.pois1.summer$estimate))
+fit.plot = data.frame(x = 1:20,
+                      y = dnbinom(x = 1:20, size = fit.negbin1.summer$estimate[1], mu = fit.negbin1.summer$estimate[2]))
 
 plot2 = ggplot(data = b1[which(b1$season=="summer"),], aes(bffm.count)) +
        geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
@@ -472,8 +530,8 @@ plot2 = ggplot(data = b1[which(b1$season=="summer"),], aes(bffm.count)) +
              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
 
-fit.plot = data.frame(x = 0:20,
-                      y = dpois(x = 0:20, fit.pois1.autumn$estimate))
+fit.plot = data.frame(x = 1:20,
+                      y = dnbinom(x = 1:20, size = fit.negbin1.autumn$estimate[1], mu = fit.negbin1.autumn$estimate[2]))
 
 plot3 = ggplot(data = b1[which(b1$season=="autumn"),], aes(bffm.count)) +
        geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
@@ -489,8 +547,8 @@ plot3 = ggplot(data = b1[which(b1$season=="autumn"),], aes(bffm.count)) +
              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
 
-fit.plot = data.frame(x = 0:20,
-                      y = dpois(x = 0:20, fit.pois1.winter$estimate))
+fit.plot = data.frame(x = 1:20,
+                      y = dnbinom(x = 1:20, size = fit.negbin1.winter$estimate[1], mu = fit.negbin1.winter$estimate[2]))
 
 plot4 = ggplot(data = b1[which(b1$season=="winter"),], aes(bffm.count)) +
        geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
@@ -514,13 +572,13 @@ plot4 = ggplot(data = b1[which(b1$season=="winter"),], aes(bffm.count)) +
 All combined:    
 
 ```{r fig.width = 11, fig.height = 6}
-fit.plot = data.frame(x = rep(0:20,5),
-                      y = c(dpois(x = 0:20, fit.pois1$estimate),
-                            dpois(x = 0:20, fit.pois1.spring$estimate),
-                            dpois(x = 0:20, fit.pois1.summer$estimate),
-                            dpois(x = 0:20, fit.pois1.autumn$estimate),
-                            dpois(x = 0:20, fit.pois1.winter$estimate)),
-                      season = rep(c("all","spring", "summer", "autumn", "winter"), each = 21))
+fit.plot = data.frame(x = rep(1:20,5),
+                      y = c(dnbinom(x = 1:20, size = fit.negbin1$estimate[1], mu = fit.negbin1$estimate[2]),
+                            dnbinom(x = 1:20, size = fit.negbin1.spring$estimate[1], mu = fit.negbin1.spring$estimate[2]),
+                            dnbinom(x = 1:20, size = fit.negbin1.summer$estimate[1], mu = fit.negbin1.summer$estimate[2]),
+                            dnbinom(x = 1:20, size = fit.negbin1.autumn$estimate[1], mu = fit.negbin1.autumn$estimate[2]),
+                            dnbinom(x = 1:20, size = fit.negbin1.winter$estimate[1], mu = fit.negbin1.winter$estimate[2])),
+                      season = rep(c("all","spring", "summer", "autumn", "winter"), each = 20))
 
 ggplot(data = fit.plot, aes(x = x, y = y, color = season)) +
        geom_line(size = 1) +
@@ -539,13 +597,13 @@ ggplot(data = fit.plot, aes(x = x, y = y, color = season)) +
 
 \vspace{20pt}   
 
-==> when using only a Poisson distribution, they are very similar across seasons.    
-While it is clear that in autumn and winter there seems to be a mixture of distributions,    
-for the purposes of the simulation we can probably keep it simple and stick to a Poisson.    
+==> fitted negative binomial distributions are very similar across seasons.    
+
+
 
 **Conclusion:**     
-Bat count can be modeled adequately using a Poisson distribution, with:    
-$N_{bats} \sim Poisson(`r round(fit.pois1$estimate,1)`)$   
+Bat count can be modeled adequately using a Negative Binomial distribution, with:    
+$N_{bats} \sim NegBinom(size = `r round(fit.negbin1$estimate[1],1)`, mu = `r round(fit.negbin1$estimate[2],1)`)$   
 
 
 
@@ -554,7 +612,7 @@ $N_{bats} \sim Poisson(`r round(fit.pois1$estimate,1)`)$
 
 
 
-### Correlation counts and sample volume    
+## Model sample volume    
 
 
 How are sample volumne and the number of bats related?    
@@ -575,23 +633,252 @@ And for each bat count, how does evaporation affect the distribution of volumes?
 
 How common is evaporation in each season?    
 
-==> histograms    
-==> regression model volume ~ bat_count + evaporation    
-
+(using only confidence level = 1 data)    
+There are some volumes indicated as <X (e.g. < 140), which could be included when modeling by allowing censoring,    
+but to keep things simple these are just removed.    
 
 \vspace{20pt} 
 
-(using only confidence level = 1 data)    
+```{r results = 'hide', fig.width = 10, fig.height = 8, out.width = "40%"}
+# urine is divided into multiple collection tubes,   
+# so we need to sum that first.
 
-```{r}
+table(b1$urine_vol_num)
+table(b1$urine_avl_vol_1_num)
+table(b1$urine_avl_vol_2_num)   # all 0
+table(b1$urine_vtm_vol_1_num)
+table(b1$urine_vtm_vol_2_num)
 
-ggplot(data = b1, aes(bffm.count)) +
-       geom_histogram(aes(y = ..density..), binwidth = 1, fill = col.2.groups[1], color = "black", alpha = 1) +
-       geom_line(data = fit.plot, aes(x = x, y = y), color = "black", size = 2) +
-       ggtitle("bff - winter") +
+b5 = b0 %>%
+       mutate(bff_conf.num = as.numeric(bff_conf)) %>%  # change to numeric
+       filter(bff_conf.num == 1) %>%    # only keep confidence level 1
+       mutate(bffm.count = as.numeric(bffm)) %>%    # change to numeric, so entries like "5+" become NA
+       filter(is.finite(bffm.count)) %>%    # only keep non-NA
+       mutate(ghffm.count = as.numeric(ghffm)) %>%   # change to numeric
+       mutate(total.count = bffm.count + ghffm.count) %>%  # sum bff and ghff counts
+       rowwise() %>%
+       mutate(urine_vol_total = sum(c(urine_vol_num,urine_avl_vol_1_num,urine_avl_vol_2_num,urine_vtm_vol_1_num,urine_vtm_vol_2_num),na.rm=T))
+
+# View(b5[which(b5$urine_vol_total==1000),])
+
+ggplot(data = b5, aes(urine_vol_total)) +
+       geom_histogram(fill = col.2.groups[1], color = "black") +
+       ggtitle("Total urine volume collected") +
        xlab("Observed count") +
        ylab("Frequency count") +
-       scale_x_continuous(breaks = 0:50) +
+       scale_x_continuous(breaks = seq(0,3000, by = 250)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+```
+
+
+\vspace{20pt}   
+
+==> there are many zeros,    
+and a lot of 1000s.    
+Those 1000s are mostly the result of 500 for each of the vtm tubes.    
+\textcolor{blue}{Does this mean they weren't the maximum volume possible?}     
+
+Removing these samples for now:    
+
+
+```{r fig.width = 10, fig.height = 8, out.width = "40%"}
+b6 = b5[-which(b5$urine_vtm_vol_1_num==500 & b5$urine_vtm_vol_2_num==500),]
+
+ggplot(data = b6, aes(urine_vol_total)) +
+       geom_histogram(fill = col.2.groups[1], color = "black") +
+       ggtitle("Total urine volume collected") +
+       xlab("Observed count") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = seq(0,3000, by = 250)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+```
+
+\vspace{50pt}   
+
+```{r fig.width = 10, fig.height = 8, out.width = "40%"}
+
+ggplot(data = b6[-which(is.na(b6$evap)),], aes(urine_vol_total)) +
+       geom_histogram(fill = col.2.groups[1], color = "black") +
+       ggtitle("Total volume collected vs evaporation status") +
+       xlab("Volume") +
+       ylab("Frequency count") +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm")) +
+       facet_wrap(~evap)
+```
+
+
+\vspace{50pt}   
+
+Correlation between bat counts and total volume.    
+Excluding counts of 0.    
+And excluding "full" evaporation, as that is always 0.    
+
+\textcolor{blue}{Even then, many total volumes are still 0, why is that?}    
+Excluding total volume = 0 data for now.    
+
+
+```{r}
+b7 = b6[-which(b6$bffm.count==0),] %>%
+       filter(!(is.na(bffm.count) | is.na(urine_vol_total) | is.na(evap))) %>%
+       filter(evap %in% c("none","partial")) %>%
+       filter(urine_vol_total > 0)
+```
+
+```{r fig.width = 8, fig.height = 7, out.width = "50%"}
+plot1 = ggplot(data = b7, aes(x = bffm.count, y = urine_vol_total)) +
+       geom_point(color = col.2.groups[1]) +
+       xlab("bff count") +
+       ylab("total urine volume") +
+       scale_x_continuous(breaks = seq(1,20,by = 2)) +
+       scale_y_continuous(breaks = seq(0,4000,by = 250)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+plot1
+```
+
+\vspace{20pt}    
+
+Regression model:    
+
+total urine volume ~ bat count + evaporation status     
+
+
+
+```{r}
+fit1.brm = brm(urine_vol_total ~ bffm.count + evap, data = b7, family = Gamma(link='log'))
+
+fit1.brm.posteriors = as_draws_df(fit1.brm)
+```
+
+Output (log):    
+
+```{r results = 'markup', fig.width = 10, fig.height = 15, out.width = "60%"}
+plot(fit1.brm)
+
+sum.fit1.brm = summary(fit1.brm)
+```
+
+Back-transformed (exp) coefficients:    
+
+```{r results = 'markup'}
+exp(sum.fit1.brm$fixed[,1])
+```
+
+
+Fitted functions/coefficients:   
+
+```{r fig.height = 6, fig.width = 8, out.width = "40%"}
+plot(conditional_effects(fit1.brm, effects = 'bffm.count'), points = T)
+plot(conditional_effects(fit1.brm, effects = 'evap'), points = T)
+
+```
+
+
+There is a positive correlation between bat count and total urine volume.    
+There is a minor effect of evaporation.    
+
+
+\vspace{20pt}  
+
+Can we use this model to adequately simulate urine volumes, given a bat count and evaporation status?    
+
+Bat counts are simulated using the negative binomial distribution fitted above (excluding 0s).    
+Evaporation status is simulated by randomly choosing 'none' or 'partial'.   
+Urine volume is then simulated using a gamma distribution with parameter values randomly selected from the model posterior.    
+
+Red = predicted, blue = observed.    
+
+
+```{r fig.width = 8, fig.height = 6, out.width = "60%"}
+
+iterations = 1000
+
+sim.dat = data.frame(bat.count = rnbinom(size = fit.negbin1$estimate[1], mu = fit.negbin1$estimate[2], n = iterations),
+                     evap = sample(c(0,1),size = iterations, replace = T),  # 0 = none, 1 = partial
+                     pred.volume = NA) %>%
+       filter(bat.count > 0)
+
+
+for(i in 1:nrow(sim.dat)){
+       random.iteration = sample(1:nrow(fit1.brm.posteriors),1)
+       shape.par = fit1.brm.posteriors$shape[random.iteration]
+       scale.par = exp(fit1.brm.posteriors$b_Intercept[random.iteration] + fit1.brm.posteriors$b_bffm.count[random.iteration] * sim.dat$bat.count[i] + fit1.brm.posteriors$b_evappartial[random.iteration] * sim.dat$evap[i])
+       sim.dat$pred.volume[i] = rgamma(n = 1, shape = shape.par, scale = scale.par)
+}
+
+
+ggplot(data = sim.dat, aes(x = bat.count, y = pred.volume)) +
+       geom_point(color = col.2.groups[1], alpha = 0.5) +
+       geom_point(data = b7, aes(x = bffm.count + 0.3, y = urine_vol_total), col = col.2.groups[2], alpha = 0.5) +
+       xlab("bff count") +
+       ylab("total urine volume") +
+       scale_x_continuous(breaks = seq(1,20,by = 2)) +
+       #scale_y_continuous(breaks = seq(0,4000,by = 250), limits = c(0,4000)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+```
+
+
+\vspace{20pt}    
+
+Simulation output is decently similar, but the large standard deviation results in the prediction of urine volumes larger than the ones observed.   
+==> should be excluded:   
+
+\vspace{20pt}  
+
+```{r fig.width = 8, fig.height = 6, out.width = "60%"}
+
+iterations = 1000
+
+sim.dat = data.frame(bat.count = rnbinom(size = fit.negbin1$estimate[1], mu = fit.negbin1$estimate[2], n = iterations),
+                     evap = sample(c(0,1),size = iterations, replace = T),  # 0 = none, 1 = partial
+                     pred.volume = NA) %>%
+       filter(bat.count > 0)
+
+
+for(i in 1:nrow(sim.dat)){
+       random.iteration = sample(1:nrow(fit1.brm.posteriors),1)
+       shape.par = fit1.brm.posteriors$shape[random.iteration]
+       scale.par = exp(fit1.brm.posteriors$b_Intercept[random.iteration] + fit1.brm.posteriors$b_bffm.count[random.iteration] * sim.dat$bat.count[i] + fit1.brm.posteriors$b_evappartial[random.iteration] * sim.dat$evap[i])
+       sim.dat$pred.volume[i] = rgamma(n = 1, shape = shape.par, scale = scale.par)
+}
+
+sim.dat = sim.dat[-which(sim.dat$pred.volume > max(b7$urine_vol_total)),]
+
+ggplot(data = sim.dat, aes(x = bat.count, y = pred.volume)) +
+       geom_point(color = col.2.groups[1], alpha = 0.5) +
+       geom_point(data = b7, aes(x = bffm.count + 0.3, y = urine_vol_total), col = col.2.groups[2], alpha = 0.5) +
+       xlab("bff count") +
+       ylab("total urine volume") +
+       scale_x_continuous(breaks = seq(1,20,by = 2)) +
+       #scale_y_continuous(breaks = seq(0,4000,by = 250), limits = c(0,4000)) +
        theme_light() +
        theme(plot.title  =  element_text(size = 11),
              text = element_text(size = 11),
@@ -604,9 +891,20 @@ ggplot(data = b1, aes(bffm.count)) +
 
 
 
+\pagebreak    
+
+## Shedding and Ct values    
 
 
-\vspace{50pt}   
+What is the distribution of Ct values being shed by individuals?    
+How is this affected by buffer type?    
+How does this translate to genome copies / virions?    
+What is the distribution of Ct values being in underroost samples?    
+
+
+
+
+
 
 # Prevalence estimation model    
 
