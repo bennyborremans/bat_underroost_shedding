@@ -891,6 +891,8 @@ ggplot(data = sim.dat, aes(x = bat.count, y = pred.volume)) +
 
 
 
+
+
 \pagebreak    
 
 ## Shedding and Ct values    
@@ -899,9 +901,352 @@ ggplot(data = sim.dat, aes(x = bat.count, y = pred.volume)) +
 What is the distribution of Ct values being shed by individuals?    
 How is this affected by buffer type?    
 How does this translate to genome copies / virions?    
-What is the distribution of Ct values being in underroost samples?    
+What is the distribution of Ct values in underroost samples where bat count = 1?    
+What is the distribution of Ct values in underroost samples for any bat count?    
 
 
+
+```{r}
+# import individual level catch/urine data
+# dbcon = preempt_database_connect("bennyborremans_preempt_creds.txt")
+# c0 = australia_catching_bat(dbcon)
+# saveRDS(c0,"australia_catching_bat.RDS")
+c0 = readRDS("australia_catching_bat.RDS")
+
+c0$acc_id = paste(c0$accession_update,c0$bat_id)
+
+# import dates
+# c1 = australia_catching_day_meta(dbcon)
+
+
+# import individual level virus data    
+# only keeping positive samples because we are interested in the distribution of positives
+# vir0 = hendra_cedar_results(dbcon)
+# saveRDS(vir0,"hendra_cedar_results.RDS")
+vir0 = readRDS("hendra_cedar_results.RDS") %>%
+       filter(grepl(pattern = "AC", x = accession_update)) %>%
+       filter(ct_hev > 0) %>%
+       mutate(sample_id = as.numeric(sample_id)) %>%
+       mutate(acc_id = paste(accession_update, sample_id))
+       
+range(vir0$ct_hev)
+nrow(vir0)
+
+
+
+# merge virus and urine data 
+ct0 = left_join(x = vir0, y = c0[,c("accession_update","bat_id","acc_id","urine_avl_1_vol","urine_avl_2_vol","urine_avl_3_vol","urine_contam_1","urine_contam_2","urine_contam_3","urine_fresh_1","urine_fresh_2","urine_fresh_3","urine_nbu_1_vol","urine_nbu_2_vol","urine_nbu_3_vol","urine_vtm_1","urine_vtm_2","urine_vtm_3")], by = "acc_id")
+
+
+
+# import Ct to genome copies data
+ctgen = read.csv("Ct-to-genome-convert_HeV.csv", stringsAsFactors = F)
+# add genome_copies column
+ct0$gencop_hev = ctgen$Nml_hev[match(ct0$ct_hev, ctgen$ct_hev, nomatch = 0)]
+
+
+
+```
+
+
+Distribution of Ct values across buffers:    
+
+
+```{r fig.height = 4, fig.width = 12, out.width = "70%"}
+plot1 = ggplot(data = ct0, aes(ct_hev)) +
+       geom_histogram(fill = col.2.groups[1], color = "black") +
+       ggtitle("HeV Ct values (any buffer, any volume)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot2 = ggplot(data = ct0, aes(x = ct_hev, fill = preservative)) +
+       geom_histogram(position = 'dodge') +
+       ggtitle("HeV Ct values (any volume)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_fill_manual(values = col.2.groups) +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       scale_y_continuous(breaks = seq(0,15,by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot1 + plot2
+```
+
+
+\vspace{30pt}   
+
+
+Distribution of Ct values across buffers, only max volumes:    
+
+
+```{r fig.height = 4, fig.width = 12, out.width = "70%"}
+
+ct0$preservative_volume = NA
+
+for(i in 1:nrow(ct0)){
+       if(ct0$preservative[i]=="AVL") ct0$preservative_volume[i] = paste(ct0$preservative[i],ct0$urine_avl_1_vol[i])
+       if(ct0$preservative[i]=="VTM") ct0$preservative_volume[i] = paste(ct0$preservative[i],ct0$urine_vtm_1[i])
+}
+
+unique(ct0$preservative_volume)
+
+ct1 = ct0 %>% 
+       filter(preservative_volume %in% c("AVL 140", "VTM >=200uL"))
+
+plot1 = ggplot(data = ct1, aes(ct_hev)) +
+       geom_histogram(fill = col.2.groups[1], color = "black") +
+       ggtitle("HeV Ct values (any buffer, max volume only)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot2 = ggplot(data = ct1, aes(x = ct_hev, fill = preservative)) +
+       geom_histogram(position = 'dodge') +
+       ggtitle("HeV Ct values (max volume only)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_fill_manual(values = col.2.groups) +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       scale_y_continuous(breaks = seq(0,15,by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot1 + plot2
+```
+
+
+\vspace{50pt}
+
+Is this distribution typical for any sampling time, or does it depend on transmission dynamics and seasonality?    
+Likely it is a combination of both.    
+Let's look at Ct values over time.    
+
+
+```{r}
+# need to import data first, but there an error when trying to download the data from the server (20220630)
+# contacted Nathan Justice about this
+
+
+# ggplot(data = ct0, aes(x = sample_date, y = ct_hev)) +
+#        geom_histogram(fill = col.2.groups[1], color = "black") +
+#        ggtitle("HeV Ct values (any buffer, any volume)") +
+#        xlab("Ct") +
+#        ylab("Frequency count") +
+#        scale_x_continuous(breaks = seq(20,40, by = 2)) +
+#        theme_light() +
+#        theme(plot.title  =  element_text(size = 11),
+#              text = element_text(size = 11),
+#              axis.text = element_text(size = 11),
+#              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+#              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+```
+
+
+\pagebreak
+
+
+Correlation between genome copies and Ct is log-linear:    
+
+
+```{r fig.height = 6, fig.width = 8, out.width = "40%"}
+ggplot(data = ctgen, aes(x = log(Nml_hev), y = ct_hev)) +
+       geom_point(color = col.2.groups[1]) +
+       ggtitle("HeV Ct values vs genome copies") +
+       xlab("Log ( genome copies (1/mL) )") +
+       ylab("Ct") +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+```
+
+
+Each increase in Ct translates to dividing the concentration by `r ctgen$Nml_hev[4]/ctgen$Nml_hev[5]`.    
+
+What does this mean for dilutions/pooling?
+I.e. when urine of a bat with a Ct value of 26 is mixed with the urine of a negative bat, what is the Ct value of the pooled sample?    
+We can create functions to convert Ct values and genome copy number,     
+which can be used to calculate expected Ct value given the contributions of different bats.    
+
+
+```{r}
+lm.ct.gencop = lm(ct_hev ~ log(Nml_hev), data = ctgen)
+lm.gencop.ct = lm(log(Nml_hev) ~ ct_hev, data = ctgen)
+
+
+gencop.to.ct.fun = function(gencop) {
+       # enter genome copies as actual number (not log-transformed)
+       # fitted values from lm(ct_hev ~ log(Nml_hev), data = ctgen)
+       return(46.606 + log(gencop) * -1.619)
+}
+
+ct.to.gencop.fun = function(ct) {
+       # fitted values from lm(log(Nml_hev) ~ ct_hev, data = ctgen)
+       return(exp(28.7818 - 0.6176 * ct))
+}
+
+
+```
+
+**Examples to build intuition:**    
+
+- Situation 1:   
+Two bats, one positive with Ct 24.    
+==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
+==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/2 = `r  ct.to.gencop.fun(24)/2`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun(ct.to.gencop.fun(24)/2))`.    
+
+\vspace{20pt}   
+
+- Situation 2:   
+Five bats, one positive with Ct 24.    
+==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
+==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/5 = `r  ct.to.gencop.fun(24)/5`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun(ct.to.gencop.fun(24)/5))`.    
+
+\vspace{20pt}   
+
+- Situation 3:   
+Ten bats, one positive with Ct 24.    
+==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
+==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/10 = `r  ct.to.gencop.fun(24)/10`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun(ct.to.gencop.fun(24)/10))`.    
+
+\vspace{20pt}   
+
+- Situation 4:   
+Three bats, one positive with Ct 24, one positive with Ct 28.    
+==> Genome copies/mL Ct 24 = `r  ct.to.gencop.fun(24)`.    
+==> Genome copies/mL Ct 28 = `r  ct.to.gencop.fun(28)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(24)` + `r  ct.to.gencop.fun(28)` + 0)/3  = `r  (ct.to.gencop.fun(24)+ct.to.gencop.fun(28))/3`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(28))/3))`.    
+
+\vspace{20pt}   
+
+- Situation 5:   
+Three bats, one positive with Ct 24, one positive with Ct 34.    
+==> Genome copies/mL Ct 24 = `r  ct.to.gencop.fun(24)`.    
+==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(24)` + `r  ct.to.gencop.fun(34)` + 0)/3  = `r  (ct.to.gencop.fun(24)+ct.to.gencop.fun(34))/3`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(34))/3))`.    
+
+\vspace{20pt}   
+
+- Situation 6:   
+Three bats, one positive with Ct 26, one positive with Ct 34.    
+==> Genome copies/mL Ct 26 = `r  ct.to.gencop.fun(26)`.    
+==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(26)` + `r  ct.to.gencop.fun(34)` + 0)/3  = `r  (ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/3`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/3))`.    
+
+\vspace{20pt}   
+
+- Situation 7:   
+Five bats, one positive with Ct 26, one positive with Ct 34.    
+==> Genome copies/mL Ct 26 = `r  ct.to.gencop.fun(26)`.    
+==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(26)` + `r  ct.to.gencop.fun(34)` + 0)/5  = `r  (ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/5`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/5))`.    
+
+\vspace{20pt}   
+
+- Situation 8:   
+Five bats, one positive with Ct 32, one positive with Ct 36.    
+==> Genome copies/mL Ct 32 = `r  ct.to.gencop.fun(32)`.    
+==> Genome copies/mL Ct 36 = `r  ct.to.gencop.fun(36)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(32)` + `r  ct.to.gencop.fun(36)` + 0)/5  = `r  (ct.to.gencop.fun(32)+ct.to.gencop.fun(36))/5`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(32)+ct.to.gencop.fun(36))/5))`.    
+
+\vspace{20pt}   
+
+- Situation 9:   
+Nine bats, one positive with Ct 27, one positive with Ct 32.    
+==> Genome copies/mL Ct 27 = `r  ct.to.gencop.fun(27)`.    
+==> Genome copies/mL Ct 32 = `r  ct.to.gencop.fun(32)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(27)` + `r  ct.to.gencop.fun(32)` + 0)/9  = `r  (ct.to.gencop.fun(27)+ct.to.gencop.fun(32))/9`.    
+==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(27)+ct.to.gencop.fun(32))/9))`.    
+
+
+\pagebreak   
+
+To simulate Ct values, we will need a distribution of Ct values in the population.    
+One possibility is to use the distribution observed for all samples in the dataset, which ignores temporal variation.    
+The fitting model will allow any distribution, and will allow it to vary over time, but regardless of the shape there must be a distribution in order for the model to be informative.    
+
+For now, let's use the observed overall distribution as an empirical probability distribution.   
+AVL samples only.    
+Max volumes only.   
+
+```{r}
+ct2 = ct1 %>%
+       filter(preservative == "AVL")
+
+ct2.prob = as.data.frame(table(ct2$ct_hev))
+ct2.prob$Var1 = as.numeric(as.character(ct2.prob$Var1))
+ct2.prob$prob = ct2.prob$Freq/sum(ct2.prob$Freq)
+
+ggplot(data = ct2.prob, aes(x = Var1, y = prob)) +
+       geom_bar(stat = "identity") +
+       ggtitle("HeV Ct value probability distribution") +
+       xlab("Ct") +
+       ylab("Probability") +
+       scale_x_continuous(breaks = 21:40) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+```
+
+
+
+
+\pagebreak   
+
+## Simulate data    
+
+Putting everything together, we can now simulate underroost sample Ct values.    
+
+One way to do this is a process following these steps:    
+
+1.  Choose a true prevalence in the population.     
+2.  For each sample, generate a number of contributing bats using the distribution fitted to the observed data.     
+3.  Assign a shedding status (neg/pos) to each of the bats, given the true prevalence.    
+4.  To each positive bat, assign a Ct value given a provided probability distribution.    
+5.  Calculate the resulting Ct value of the pooled sample, assuming equal contributions from each bat.    
+
+
+```{r}
+
+```
 
 
 
