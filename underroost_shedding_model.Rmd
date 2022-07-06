@@ -486,8 +486,8 @@ fit.negbin1.autumn = fitdistr(b1$bffm.count[which(b1$season=="autumn")], densfun
 fit.negbin1.winter = fitdistr(b1$bffm.count[which(b1$season=="winter")], densfun = "negative binomial")
 
 fit.negbin1.seasons = data.frame(season = c("spring","summer","autumn","winter"),
-                               size = c(fit.negbin1.spring$estimate[1], fit.negbin1.summer$estimate[1], fit.negbin1.autumn$estimate[1], fit.negbin1.winter$estimate[1]),
-                               mu = c(fit.negbin1.spring$estimate[2], fit.negbin1.summer$estimate[2], fit.negbin1.autumn$estimate[2], fit.negbin1.winter$estimate[2]))
+                                 size = c(fit.negbin1.spring$estimate[1], fit.negbin1.summer$estimate[1], fit.negbin1.autumn$estimate[1], fit.negbin1.winter$estimate[1]),
+                                 mu = c(fit.negbin1.spring$estimate[2], fit.negbin1.summer$estimate[2], fit.negbin1.autumn$estimate[2], fit.negbin1.winter$estimate[2]))
 ```
 
 
@@ -928,7 +928,7 @@ vir0 = readRDS("hendra_cedar_results.RDS") %>%
        filter(ct_hev > 0) %>%
        mutate(sample_id = as.numeric(sample_id)) %>%
        mutate(acc_id = paste(accession_update, sample_id))
-       
+
 range(vir0$ct_hev)
 nrow(vir0)
 
@@ -1112,6 +1112,26 @@ ct.to.gencop.fun = function(ct) {
        return(exp(28.7818 - 0.6176 * ct))
 }
 
+ct.pooled.fun = function(ct) {
+       if(sum(ct) > 0) {
+              gencops = ct
+              gencops[which(gencops>0)] = ct.to.gencop.fun(ct[which(ct>0)])
+              pooled.ct = gencop.to.ct.fun(sum(gencops)/length(gencops))
+       } else {
+              pooled.ct = 0
+       }
+       
+       if(pooled.ct > 40) pooled.ct = 0
+       return(pooled.ct)
+}
+
+# Calculate Ct of pooled sample:
+gencop.to.ct.fun((ct.to.gencop.fun(28))*3)
+gencop.to.ct.fun((ct.to.gencop.fun(26.22666))/3)
+
+gencop.to.ct.fun((ct.to.gencop.fun(27)+ct.to.gencop.fun(29))/2)
+gencop.to.ct.fun((ct.to.gencop.fun(28)))
+
 
 ```
 
@@ -1121,7 +1141,7 @@ ct.to.gencop.fun = function(ct) {
 Two bats, one positive with Ct 24.    
 ==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
 ==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/2 = `r  ct.to.gencop.fun(24)/2`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun(ct.to.gencop.fun(24)/2))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun(ct.to.gencop.fun(24)/2)`.    
 
 \vspace{20pt}   
 
@@ -1129,7 +1149,7 @@ Two bats, one positive with Ct 24.
 Five bats, one positive with Ct 24.    
 ==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
 ==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/5 = `r  ct.to.gencop.fun(24)/5`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun(ct.to.gencop.fun(24)/5))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun(ct.to.gencop.fun(24)/5)`.    
 
 \vspace{20pt}   
 
@@ -1137,7 +1157,7 @@ Five bats, one positive with Ct 24.
 Ten bats, one positive with Ct 24.    
 ==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
 ==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/10 = `r  ct.to.gencop.fun(24)/10`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun(ct.to.gencop.fun(24)/10))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun(ct.to.gencop.fun(24)/10)`.    
 
 \vspace{20pt}   
 
@@ -1146,7 +1166,7 @@ Three bats, one positive with Ct 24, one positive with Ct 28.
 ==> Genome copies/mL Ct 24 = `r  ct.to.gencop.fun(24)`.    
 ==> Genome copies/mL Ct 28 = `r  ct.to.gencop.fun(28)`.    
 ==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(24)` + `r  ct.to.gencop.fun(28)` + 0)/3  = `r  (ct.to.gencop.fun(24)+ct.to.gencop.fun(28))/3`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(28))/3))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(28))/3)`.    
 
 \vspace{20pt}   
 
@@ -1155,7 +1175,7 @@ Three bats, one positive with Ct 24, one positive with Ct 34.
 ==> Genome copies/mL Ct 24 = `r  ct.to.gencop.fun(24)`.    
 ==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
 ==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(24)` + `r  ct.to.gencop.fun(34)` + 0)/3  = `r  (ct.to.gencop.fun(24)+ct.to.gencop.fun(34))/3`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(34))/3))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(34))/3)`.    
 
 \vspace{20pt}   
 
@@ -1164,7 +1184,7 @@ Three bats, one positive with Ct 26, one positive with Ct 34.
 ==> Genome copies/mL Ct 26 = `r  ct.to.gencop.fun(26)`.    
 ==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
 ==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(26)` + `r  ct.to.gencop.fun(34)` + 0)/3  = `r  (ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/3`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/3))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/3)`.    
 
 \vspace{20pt}   
 
@@ -1173,7 +1193,7 @@ Five bats, one positive with Ct 26, one positive with Ct 34.
 ==> Genome copies/mL Ct 26 = `r  ct.to.gencop.fun(26)`.    
 ==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
 ==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(26)` + `r  ct.to.gencop.fun(34)` + 0)/5  = `r  (ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/5`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/5))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/5)`.    
 
 \vspace{20pt}   
 
@@ -1182,7 +1202,7 @@ Five bats, one positive with Ct 32, one positive with Ct 36.
 ==> Genome copies/mL Ct 32 = `r  ct.to.gencop.fun(32)`.    
 ==> Genome copies/mL Ct 36 = `r  ct.to.gencop.fun(36)`.    
 ==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(32)` + `r  ct.to.gencop.fun(36)` + 0)/5  = `r  (ct.to.gencop.fun(32)+ct.to.gencop.fun(36))/5`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(32)+ct.to.gencop.fun(36))/5))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(32)+ct.to.gencop.fun(36))/5)`.    
 
 \vspace{20pt}   
 
@@ -1191,7 +1211,7 @@ Nine bats, one positive with Ct 27, one positive with Ct 32.
 ==> Genome copies/mL Ct 27 = `r  ct.to.gencop.fun(27)`.    
 ==> Genome copies/mL Ct 32 = `r  ct.to.gencop.fun(32)`.    
 ==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(27)` + `r  ct.to.gencop.fun(32)` + 0)/9  = `r  (ct.to.gencop.fun(27)+ct.to.gencop.fun(32))/9`.    
-==> Resulting Ct of pooled sample = `r  round(gencop.to.ct.fun((ct.to.gencop.fun(27)+ct.to.gencop.fun(32))/9))`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(27)+ct.to.gencop.fun(32))/9)`.    
 
 
 \pagebreak   
@@ -1200,23 +1220,50 @@ To simulate Ct values, we will need a distribution of Ct values in the populatio
 One possibility is to use the distribution observed for all samples in the dataset, which ignores temporal variation.    
 The fitting model will allow any distribution, and will allow it to vary over time, but regardless of the shape there must be a distribution in order for the model to be informative.    
 
-For now, let's use the observed overall distribution as an empirical probability distribution.   
 AVL samples only.    
 Max volumes only.   
 
-```{r}
+Orange = cubic spline    
+Green = natural spline    
+Red = b-spline   
+Pink = lowess smoothing   
+
+The natural spline makes the most sense, so let's use that one for now.    
+
+
+```{r fig.height = 6, fig.width = 8, out.width = "40%"}
 ct2 = ct1 %>%
        filter(preservative == "AVL")
 
 ct2.prob = as.data.frame(table(ct2$ct_hev))
-ct2.prob$Var1 = as.numeric(as.character(ct2.prob$Var1))
+colnames(ct2.prob)[1] = "ct"
+ct2.prob$ct = as.numeric(as.character(ct2.prob$ct))
 ct2.prob$prob = ct2.prob$Freq/sum(ct2.prob$Freq)
 
-ggplot(data = ct2.prob, aes(x = Var1, y = prob)) +
-       geom_bar(stat = "identity") +
-       ggtitle("HeV Ct value probability distribution") +
+
+# fit smoothing splines
+ct2.ss = smooth.spline(x = ct2.prob$ct, y = ct2.prob$Freq, nknots = 5)
+ct2.prob$spline1 = ct2.ss$y
+
+ct2.ss2 = lm(Freq ~ ns(ct, 4), data = ct2.prob)
+ct2.prob$spline2 = predict(ct2.ss2)
+
+ct2.ss3 = lm(Freq ~ bs(x = ct, knots = c(21,29,37), degree = 4), data = ct2.prob)
+ct2.prob$spline3 = predict(ct2.ss3)
+
+ct2.ss4 = lowess(x = ct2.prob$ct, y = ct2.prob$Freq, f = 0.4)
+ct2.prob$spline4 = ct2.ss4$y
+
+
+ggplot(data = ct2.prob, aes(x = ct, y = Freq)) +
+       geom_bar(stat = "identity", fill = col.no.groups, col = "black") +
+       ggtitle("HeV Ct value fitted frequency distributions\nAVL only, max volume only") +
+       geom_line(aes(x = ct, y = spline1), col = "orange", size = 1) +
+       geom_line(aes(x = ct, y = spline2), col = "green", size = 1) +
+       geom_line(aes(x = ct, y = spline3), col = "red", size = 1) +
+       geom_line(aes(x = ct, y = spline4), col = "pink", size = 1) +
        xlab("Ct") +
-       ylab("Probability") +
+       ylab("Frequency") +
        scale_x_continuous(breaks = 21:40) +
        theme_light() +
        theme(plot.title  =  element_text(size = 11),
@@ -1224,12 +1271,39 @@ ggplot(data = ct2.prob, aes(x = Var1, y = prob)) +
              axis.text = element_text(size = 11),
              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+```
+
+
+Probability distribution:   
+
+```{r fig.height = 6, fig.width = 8, out.width = "40%"}
+
+# calculate probability distribution for full range of Ct values    
+ct.fit.prob = data.frame(ct = 21:40, 
+                         prob = predict(ct2.ss2, newdata = data.frame(ct = 21:40))/sum(predict(ct2.ss2, newdata = data.frame(ct = 21:40))))
+
+ggplot(data = ct.fit.prob, aes(x = ct, y = prob)) +
+       geom_line(col = col.no.groups, size = 2) +
+       ggtitle("HeV Ct value fitted probability distribution\nAVL only, max volume only") +
+       xlab("Ct") +
+       ylab("Probability") +
+       scale_x_continuous(breaks = 21:40) +
+       scale_y_continuous(limits = c(0,0.1)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
 ```
 
 
 
 
 \pagebreak   
+
 
 ## Simulate data    
 
@@ -1243,17 +1317,102 @@ One way to do this is a process following these steps:
 4.  To each positive bat, assign a Ct value given a provided probability distribution.    
 5.  Calculate the resulting Ct value of the pooled sample, assuming equal contributions from each bat.    
 
+\vspace{10pt}  
+
+Code:   
+
+\vspace{30pt} 
+       
+```{r echo=T}
+# 1.  Choose a true prevalence in the population.   
+true.prev = 0.15
+
+# 2.  For each sample, generate a number of contributing bats 
+# using the distribution fitted to the observed data.     
+set.seed(123)
+n.bat = rnbinom(1, size = 29.88, mu = 2.336)
+
+# 3.  Assign a shedding status (neg/pos) to each of the bats, 
+# given the true prevalence.    
+bat.status = rbinom(n = n.bat, size = 1, prob = true.prev)
+
+# 4.  To each bat, assign a Ct value given a provided probability distribution.    
+bat.ct = bat.status
+bat.ct[which(bat.ct > 0)] = sample(ct.fit.prob$ct, size = sum(bat.status), 
+                                   replace = T, prob = ct.fit.prob$prob)
+
+# 5.  Calculate the resulting Ct value of the pooled sample, 
+# assuming equal contributions from each bat.    
+ct.pooled = ct.pooled.fun(bat.ct)
+
+
+
+# let's put this all into one function to make simulations easier
+ur.sim.fun = function(prev, n){
+       
+       out.sim = vector(mode = "list", length = n+1)
+       out.sim[[1]] = data.frame(ct = numeric(n), n.bat = numeric(n))
+       
+       for(i in 1:n){
+              n.bat = max(1,rnbinom(1, size = 29.88, mu = 2.336))   # at least 1 bat
+              bat.status = rbinom(n = n.bat, size = 1, prob = prev)
+              bat.ct = bat.status
+              bat.ct[which(bat.ct > 0)] = sample(ct2.prob$ct, size = sum(bat.status), 
+                                                 replace = T, prob = ct2.prob$prob)
+              ct.pooled = ct.pooled.fun(bat.ct)
+       
+              out.sim[[1]][i,1] = ct.pooled
+              out.sim[[1]][i,2] = n.bat
+              out.sim[[i+1]] = bat.ct
+       }
+       
+       
+       return(out.sim)
+       # first item of output list = data frame with pooled sample ct values, 
+       # and corresponding number of bats
+       # remaining items are the Ct values of each bat of each pooled sample
+}
+```
+
+
+Example output:   
 
 ```{r}
-
+set.seed(15)
+ur.sim.fun(prev = 0.15, n = 9)
 ```
+
+
 
 
 
 
 # Prevalence estimation model    
 
+
+
+## Probability distributions for pooled Ct - N pos combinations    
+
+
+For each pooled underroost sample, we need to calculate the likelihood that it could have resulted from N bats of which X were positive with Ct values Y_x.   
+
+This can be done by first calculating all the probabilities, and then using these in the full model.   
+(As opposed to developing a complicated algorithm that does it every iteration).    
+
+The result with be a 3-dimensional table with dimensions:    
+1. N positive    
+2. N total   
+3. Pooled Ct    
+
+For example, if a sample has a Ct of 28 with 4 bats above the sheet, and a suggested number of positive bats of 2, 
+we will be able to look up the sum of the probabilities of each possible combination of 2 Ct values diluted with 2 negative samples.    
+That is done using the individual-level probability distribution of Ct values.   
+
+
+
 ```{r}
+
+
 
 ```
 
