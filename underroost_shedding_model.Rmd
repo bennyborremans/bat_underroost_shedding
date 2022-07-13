@@ -24,6 +24,7 @@ library(lubridate)   # date manipulations
 library(MASS) # fit distributions 
 library(brms)   # bayesian regression models with stan, through brms   
 library(rstan)   # bayesian regression models with stan, through rstan
+library(RcppAlgos) # for comboGeneral function
 
 
 # set colors for plots 
@@ -1245,6 +1246,7 @@ ct2.prob$prob = ct2.prob$Freq/sum(ct2.prob$Freq)
 ct2.ss = smooth.spline(x = ct2.prob$ct, y = ct2.prob$Freq, nknots = 5)
 ct2.prob$spline1 = ct2.ss$y
 
+require(splines)
 ct2.ss2 = lm(Freq ~ ns(ct, 4), data = ct2.prob)
 ct2.prob$spline2 = predict(ct2.ss2)
 
@@ -1264,7 +1266,7 @@ ggplot(data = ct2.prob, aes(x = ct, y = Freq)) +
        geom_line(aes(x = ct, y = spline4), col = "pink", size = 1) +
        xlab("Ct") +
        ylab("Frequency") +
-       scale_x_continuous(breaks = 21:40) +
+       scale_x_continuous(breaks = 21:39) +
        theme_light() +
        theme(plot.title  =  element_text(size = 11),
              text = element_text(size = 11),
@@ -1280,15 +1282,15 @@ Probability distribution:
 ```{r fig.height = 6, fig.width = 8, out.width = "40%"}
 
 # calculate probability distribution for full range of Ct values    
-ct.fit.prob = data.frame(ct = 21:40, 
-                         prob = predict(ct2.ss2, newdata = data.frame(ct = 21:40))/sum(predict(ct2.ss2, newdata = data.frame(ct = 21:40))))
+ct.fit.prob = data.frame(ct = 21:39, 
+                         prob = predict(ct2.ss2, newdata = data.frame(ct = 21:39))/sum(predict(ct2.ss2, newdata = data.frame(ct = 21:39))))
 
 ggplot(data = ct.fit.prob, aes(x = ct, y = prob)) +
        geom_line(col = col.no.groups, size = 2) +
        ggtitle("HeV Ct value fitted probability distribution\nAVL only, max volume only") +
        xlab("Ct") +
        ylab("Probability") +
-       scale_x_continuous(breaks = 21:40) +
+       scale_x_continuous(breaks = 21:39) +
        scale_y_continuous(limits = c(0,0.1)) +
        theme_light() +
        theme(plot.title  =  element_text(size = 11),
@@ -1322,7 +1324,7 @@ One way to do this is a process following these steps:
 Code:   
 
 \vspace{30pt} 
-       
+
 ```{r echo=T}
 # 1.  Choose a true prevalence in the population.   
 true.prev = 0.15
@@ -1360,7 +1362,7 @@ ur.sim.fun = function(prev, n){
               bat.ct[which(bat.ct > 0)] = sample(ct2.prob$ct, size = sum(bat.status), 
                                                  replace = T, prob = ct2.prob$prob)
               ct.pooled = ct.pooled.fun(bat.ct)
-       
+              
               out.sim[[1]][i,1] = ct.pooled
               out.sim[[1]][i,2] = n.bat
               out.sim[[i+1]] = bat.ct
@@ -1413,10 +1415,276 @@ That is done using the individual-level probability distribution of Ct values.
 ```{r}
 
 
+# concise version of how probabilities are calculated:
+# for example only Ct values 21, 22 and 23 are possible
+# 2 positive bats
+n.pos = 2
+# 2 negative bats
+n.neg = 2
+# observed Ct of pooled sample = 23   
+observed.ct = 23 
+
+# 1. make a table of all possible combinations of Ct values (after converting to genome copies):
+# 1a. make table of positive combinations
+combs.pos = expand.grid(rep(list(ct.to.gencop.fun(c(21,22,23))),n.pos))
+# 1b. add in negatives
+combs = cbind(combs.pos,matrix(data = 0, ncol = n.neg, nrow = nrow(combs.pos)))
+
+# 2. calculate means for each combination, including the negatives
+comb.means.gencop = apply(combs, MARGIN = 1, mean)
+
+# 3. convert back to Ct values
+comb.means.ct = gencop.to.ct.fun(comb.means.gencop)
+
+# 4. round up to nearest round Ct value (reasoning = when doing PCR, a concentration that is technically at e.g. Ct 34.1 won't be detected at Ct = 34, but will be detected at Ct = 35.
+comb.means.ct.round = ceiling(comb.means.ct)
+
+# 5. determine combinations that result in Ct values equal to that of the pooled sample
+comb.possible.idx = which(comb.means.ct.round == observed.ct)
+
+# 6. for the possible combinations, sum all probabilities
+# 6a. replicate combinations dataframe using probabilities
+comb.probs = expand.grid(rep(list(ct.fit.prob[1:3,2]),n.pos))
+
+# 6b. calculate the total probability of all combinations
+comb.prob.sum.total = sum(comb.probs)
+
+# 6c. sum probabilities of selected combinations
+comb.prob.sums = apply(comb.probs[comb.possible.idx,],MARGIN = 1, sum)
+
+# 6d. sum the sums
+comb.prob.sum.sums = sum(comb.prob.sums)
+
+# 6e. normalize the probabilities
+comb.prob.sum.sums.normalized = comb.prob.sum.sums/comb.prob.sum.total
+
+# ==> this is the likelihood of observing a pooled Ct of 23 given 2 positive and 2 negative bats.
+# it is calculated by first determining which combinations of Ct values can result in the pooled Ct value,
+# then calculating the sum of all probabilities that those Ct values can occur in an individual (using the individual-level probability distribution).
+# (e.g. bat 1 = Ct 23, bat 2 = Ct 24, so sum is 0.03196287 + 0.03524308. each combination will at the end have been counted twice, as bat 1 = 24 and bat 2 = 23 is another possibility)
+# this is then normalized by dividing by the sum of all Ct value combinations.
+# resulting in the total probability of getting a certain pooled Ct value when there are 2 positive and 2 negative bats.
+# (in the model, this probability is then multiplied by the probability of having 2 positive bats, which accounts for the neg/pos probability)
+
+
 
 ```
 
 
 
+```{r}
+# full version, all Ct values
+# one example
 
+# concise version of how probabilities are calculated:
+# for example only Ct values 21, 22 and 23 are possible
+# 3 positive bats
+n.pos = 3
+# 5 negative bats
+n.neg = 5
+# observed Ct of pooled sample = 28     
+observed.ct = 28
+
+# 1. make a table of all possible combinations of Ct values (after converting to genome copies):
+# 1a. make table of positive combinations
+combs.pos = expand.grid(rep(list(ct.to.gencop.fun(21:39)),n.pos))
+# 1b. add in negatives
+combs = cbind(combs.pos,matrix(data = 0, ncol = n.neg, nrow = nrow(combs.pos)))
+
+# 2. calculate means for each combination, including the negatives
+comb.means.gencop = apply(combs, MARGIN = 1, mean)
+
+# 3. convert back to Ct values
+comb.means.ct = gencop.to.ct.fun(comb.means.gencop)
+
+# 4. round up to nearest round Ct value (reasoning = when doing PCR, a concentration that is technically at e.g. Ct 34.1 won't be detected at Ct = 34, but will be detected at Ct = 35.
+comb.means.ct.round = ceiling(comb.means.ct)
+
+# 5. determine combinations that result in Ct values equal to that of the pooled sample
+comb.possible.idx = which(comb.means.ct.round == observed.ct)
+
+# 6. for the possible combinations, sum all probabilities
+# 6a. replicate combinations dataframe using probabilities
+comb.probs = expand.grid(rep(list(ct.fit.prob[,2]),n.pos))
+
+# 6b. calculate the total probability of all combinations
+comb.prob.sum.total = sum(comb.probs)
+
+# 6c. sum probabilities of selected combinations
+comb.prob.sums = apply(comb.probs[comb.possible.idx,],MARGIN = 1, sum)
+
+# 6d. sum the sums
+comb.prob.sum.sums = sum(comb.prob.sums)
+
+# 6e. normalize the probabilities
+comb.prob.sum.sums.normalized = comb.prob.sum.sums/comb.prob.sum.total
+
+# ==> this is the probability of observing a pooled Ct of 28 given 3 positive and 5 negative bats.
+
+
+
+```
+
+
+
+```{r}
+
+range.Ntotal = 1:15   # taking a maximum of 15 because beyond that the number of possible combinations of Ct values becomes very large. algorithm can be changed however to accommodate for larger sample sizes, that will just take much longer to process
+range.Npos = 0:15
+range.Ct = c(0,21:39)
+ct.prob.array = array(data = NA, dim = c(length(range.Npos), length(range.Ntotal), length(range.Ct)), dimnames = list(Npos = range.Npos,
+                                                                                                                      Ntotal = range.Ntotal,
+                                                                                                                      Ct = range.Ct))
+
+# function to calculate number of combinations
+n.comb.fun = function(n.elements, n.samples) factorial(n.samples + n.elements - 1)/(factorial(n.samples) * factorial(n.elements - 1))
+
+
+# this takes a long time, so the output is saved after the first run for quick import
+
+
+# super fast combination function used to calculate sums below
+# comboGeneral(21:39,m=20, repetition = T, lower = 1, upper = 10000)
+# comboGeneral(1:3,m=2, repetition = T, FUN = function(x) mean(x), FUN.VALUE = 1.0)
+# 
+# n.comb.fun(19, 20)/1000
+# comboGeneral(21:39,m=20, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0, lower = 1, upper = 33578001)
+# comboGeneral(21:39,m=10, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0)
+
+
+# function to calculate number of permutations with repetition, and multiply this by the sum of the elements
+# https://www.ck12.org/c/probability/permutations-with-repetition/lesson/Permutations-with-Repetition-BSC-PST/
+# this is to calculate the total probability of observing a certain combination of Ct values, taking into account the permutations
+# example: prod(factorial(as.numeric(table(c(1,1,1,2,3)))))
+n.perm.fun = function(x) factorial(length(x)) / prod(factorial(as.numeric(table(x))))
+n.perm.sum.fun = function(x) sum(x) * (factorial(length(x)) / prod(factorial(as.numeric(table(x)))))
+# comboGeneral(1:3,m=4, repetition = T) 
+# comboGeneral(1:3,m=4, repetition = T, FUN = n.perm.fun, FUN.VALUE = 1)
+
+# time functions (same time)
+# t0 = Sys.time()
+# comboGeneral(1:15,m=9, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0)
+# t1 = Sys.time() - t0
+# 
+# t0 = Sys.time()
+# comboGeneral(1:15,m=9, repetition = T, FUN = n.perm.fun, FUN.VALUE = 1.0)
+# t2 = Sys.time() - t0
+
+
+
+run.again = F
+if(run.again == T) {
+       
+       # first, for each number of positives calculate the sums of all possible ct (genome copy) combinations. 
+       # that list of sums will be used later instead of having to compute all combinations every time
+       
+       # separate into 1:10 and 11:15, because the larger ones need to be split up for computation
+       for(i in 1:10) {
+              gc()
+              
+              # calculate sums of genome copy combinations
+              cur.sums.gencop = comboGeneral(ct.to.gencop.fun(21:39),m=i, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0)
+              
+              # calculate sums of probabilities
+              cur.sums.probs = comboGeneral(ct.fit.prob[,2],m=i, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0)
+
+              saveRDS(cur.sums.gencop, paste0("genome.copy.sum.list.",i,".RDS"))
+              rm(cur.sums.gencop)
+              saveRDS(cur.sums.probs, paste0("probs.sum.list.",i,".RDS"))
+              rm(cur.sums.probs)
+              
+              print(i)
+       }
+       
+       for(i in 11:15) {
+              gc()
+              
+              cur.sums.gencop = numeric(n.comb.fun(19, i))
+              cur.sums.probs = numeric(n.comb.fun(19, i))
+              teller = 1
+              for(j in 1:100){
+                     cur.sums.gencop[teller:((teller+n.comb.fun(19, i)%/%100)-1)] = comboGeneral(ct.to.gencop.fun(21:39),m=i, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0, lower = teller, upper = ((teller+n.comb.fun(19, i)%/%100)-1))
+                     cur.sums.probs[teller:((teller+n.comb.fun(19, i)%/%100)-1)] = comboGeneral(ct.fit.prob[,2],m=i, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0, lower = teller, upper = ((teller+n.comb.fun(19, i)%/%100)-1))
+                     teller = teller + n.comb.fun(19, i)%/%100
+                     print(paste0("i = ",i, ", j = ",j))
+              }
+              # for the remainder:
+              if(teller < n.comb.fun(19, i)) {
+                     cur.sums.gencop[teller:n.comb.fun(19, i)] = comboGeneral(ct.to.gencop.fun(21:39),m=i, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0, lower = teller)
+                     cur.sums.probs[teller:n.comb.fun(19, i)] = comboGeneral(ct.fit.prob[,2],m=i, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0, lower = teller)
+              }
+              
+              saveRDS(cur.sums.gencop, paste0("genome.copy.sum.list.",i,".RDS"))
+              rm(cur.sums.gencop)
+              saveRDS(cur.sums.probs, paste0("probs.sum.list.",i,".RDS"))
+              rm(cur.sums.probs)
+       }
+       
+       
+       for(i in 1:length(range.Ct)){
+              
+              
+              cur.ct = range.Ct[i]
+              
+              for(j in range.Ntotal){
+                     
+                     cur.n.total = j
+                     
+                     for(k in range.Npos[1]:cur.n.total){
+                            gc()
+                            cur.n.pos = k
+                            cur.n.neg = cur.n.total - cur.n.pos
+                            
+                            if(cur.n.pos == 0) {
+                                   # if there are no positives, the Ct must be 0 with probability 1
+                                   if(cur.ct == 0) cur.prob = 1       
+                                   if(cur.ct != 0) cur.prob = 0
+                            }
+                            
+                            if(cur.n.pos > 0) {
+                                   
+                                   # read in sums of genome copies and probabilities
+                                   cur.sums.perms = readRDS(paste0("genome.copy.sum.list.",k,".RDS"))
+                                   cur.sums.probs = readRDS(paste0("probs.sum.list.",k,".RDS"))
+                                   
+                                   # calculate mean for each combination, including the negatives (i.e. divide by total number, not just by number of positives)
+                                   comb.means.gencop = apply(cur.sums.perms, MARGIN = 1, function(x) x/cur.n.total)
+                                   
+                                   # convert means to ct values
+                                   comb.means.ct = round(gencop.to.ct.fun(comb.means.gencop),1)    # rounding to 1 decimal digit because the conversion can add some unexisting Ct val
+                                   
+                                   # round up to nearest round Ct value (reasoning = when doing PCR, a concentration that is technically at e.g. Ct 34.1 won't be detected at Ct = 34, but will be detected at Ct = 35.
+                                   comb.means.ct.round = ceiling(comb.means.ct)
+                                   
+                                   # transform all ct values equal to or larger than 40 to 0
+                                   comb.means.ct.round[comb.means.ct.round > 39] = 0
+                                   
+                                   # determine combinations that result in Ct values equal to that of the pooled sample
+                                   comb.possible.idx = which(comb.means.ct.round == cur.ct)
+                                   
+                                   if(length(comb.possible.idx) == 0) cur.prob = 0
+                                   if(length(comb.possible.idx) > 0) {
+
+                                          # sum probabilities of selected combinations
+                                          comb.prob.sums = sum(cur.sums.probs[comb.possible.idx])
+                                          
+                                          # 6e. normalize the probabilities
+                                          cur.prob = comb.prob.sums/sum(comb.prob.sums)
+                                   }
+                            }
+                            rm(comb.pos.ct)
+                            rm(comb.pos.gencop)
+                            rm(comb.probs)
+                            ct.prob.array[k,j,i] = cur.prob
+                            print(paste0("Ct = ",range.Ct[i],", Npos = ", k, ", Ntotal = ",j))
+                     }
+              }
+       }
+       saveRDS(ct.prob.array, "ct.prob.array.RDS")
+} else {
+       ct.prob.array = readRDS("ct.prob.array.RDS")
+}
+
+
+```
 
