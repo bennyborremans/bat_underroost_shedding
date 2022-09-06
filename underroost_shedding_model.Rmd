@@ -91,6 +91,8 @@ The last step is to combine these processes into one simulation model that gener
 # b0 = australia_underroost(dbcon)
 # saveRDS(b0,"australia_underroost_downloaded_20220607.RDS")
 
+
+
 b0 = readRDS("australia_underroost_downloaded_20220607.RDS")
 
 # explanation of columns:
@@ -1274,6 +1276,23 @@ ggplot(data = ct2.prob, aes(x = ct, y = Freq)) +
              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
 
+plot1 = ggplot(data = ct2.prob, aes(x = ct, y = Freq)) +
+       geom_bar(stat = "identity", fill = col.no.groups, col = "black") +
+       xlab("Ct") +
+       ylab("Frequency") +
+       scale_x_continuous(breaks = 21:39) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+
+# ggsave(plot = plot1,filename = "Ct value individual histogram.png",width = 6, height = 4, dpi=600)
+
+
 ```
 
 
@@ -1285,9 +1304,8 @@ Probability distribution:
 ct.fit.prob = data.frame(ct = 21:39, 
                          prob = predict(ct2.ss2, newdata = data.frame(ct = 21:39))/sum(predict(ct2.ss2, newdata = data.frame(ct = 21:39))))
 
-ggplot(data = ct.fit.prob, aes(x = ct, y = prob)) +
+plot1 = ggplot(data = ct.fit.prob, aes(x = ct, y = prob)) +
        geom_line(col = col.no.groups, size = 2) +
-       ggtitle("HeV Ct value fitted probability distribution\nAVL only, max volume only") +
        xlab("Ct") +
        ylab("Probability") +
        scale_x_continuous(breaks = 21:39) +
@@ -1299,6 +1317,13 @@ ggplot(data = ct.fit.prob, aes(x = ct, y = prob)) +
              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
 
+plot1
+
+# ggsave(plot = plot1,filename = "Ct value individual fitted probabilities.png",width = 6, height = 4, dpi=600)
+
+
+# save ct.fit.prob
+# saveRDS(ct.fit.prob, "ct.fit.prob.RDS")
 ```
 
 
@@ -1734,7 +1759,12 @@ if(run.again == T) {
                             if(length(comb.possible.idx) > 0) {
                                    
                                    # sum probabilities of selected combinations, normalized
-                                   cur.prob = sum(cur.sums.probs[comb.possible.idx])/sum(cur.sums.probs)
+                                   ##########################
+                                   ####   !! this step can be done separately, so computation can be sped up a lot.
+                                   ####      can be very useful when dealing with e.g. seasonally varying Ct distributions.
+                                   ####      I think all that needs to be done is store every comb.possible.idx, then do the next step and store it in the right place in the array
+                                   ##########################
+                                   cur.prob = sum(cur.sums.probs[comb.possible.idx])/sum(cur.sums.probs)  
                                    rm(comb.possible.idx, cur.sums.probs);gc()
                                    
                             }
@@ -1744,11 +1774,16 @@ if(run.again == T) {
                      }
                      
                      if(cur.ct == 0) {
-                            ct.prob.array[1,j,i] = 1 - sum(ct.prob.array[,j,i])
-                     } else {
-                            # normalize probabilities (sum to 1 per Ntotal)
-                            ct.prob.array[,j,i] = round(ct.prob.array[,j,i]/sum(ct.prob.array[,j,i],na.rm=T),5)
+                            ct.prob.array[1,j,i] = 1
                      }
+                     
+                     # normalization:   (old, not doing this because it messes up the dot product with binomial densities
+                     # if(cur.ct == 0) {
+                     #        ct.prob.array[1,j,i] = 1 - sum(ct.prob.array[,j,i])
+                     # } else {
+                     #        # normalize probabilities (sum to 1 per Ntotal)
+                     #        ct.prob.array[,j,i] = round(ct.prob.array[,j,i]/sum(ct.prob.array[,j,i],na.rm=T),5)
+                     # }
                      print(ct.prob.array[,j,i])
               }
        }
@@ -1764,6 +1799,7 @@ if(run.again == T) {
 # ct.prob.array[,,15:16]
 # ct.prob.array[,,19:20]
 # ct.prob.array[1:2,,]
+
 
 
 ```
