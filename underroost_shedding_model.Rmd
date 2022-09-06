@@ -24,7 +24,8 @@ library(lubridate)   # date manipulations
 library(MASS) # fit distributions 
 library(brms)   # bayesian regression models with stan, through brms   
 library(rstan)   # bayesian regression models with stan, through rstan
-
+library(RcppAlgos) # for comboGeneral function
+library(bayesplot)
 
 # set colors for plots 
 col.no.groups = brewer.pal(n = 11,"RdYlBu")[4]
@@ -48,14 +49,11 @@ Last update: `r format(Sys.Date(),"%d %b %Y")`.
 
 The table of contents can be clicked to jump straight to specific sections.
 
-
-\pagebreak   
-
 Goal = create a model of underroost bat virus shedding.    
 
-Sheets placed below roosts collect urine from an estimated number of bats.   
-Urine samples on the sheet are pooled, and tested for RNA concentration using RT-PCR.   
-Total sample volume depend on the number and volume of urine droplets on the sheets.    
+Sheets are placed below roosts to collect urine from an estimated number of bats.   
+Urine samples on the sheet are pooled, and tested for RNA concentration using RT-PCR (Ct values).   
+Total sample volume depends on the number and volume of urine droplets on the sheets.    
 The number and species of bats above the sheet are estimated, but not all bats can always be observed, and bats can move after/before observation.   
 Samples are stored in one of two buffers (AVL/VTM), or without buffer (NB).   
 Buffer type affects PCR sensitivity.    
@@ -65,17 +63,25 @@ which makes it difficult to estimate shedding prevalence in the population.
 
 The goal of this project is two-fold:    
 (1) Create a simulation model of the different processes that are believed to be involved, to get better insights and build intuition.    
-(2) Create a model to estimate shedding prevalence in the population from the available data, capturing as much of the observation process as reasonably possible.    
+(2) Create a model to **estimate shedding prevalence in the population** from pooled samples.    
 
-
-
-# Simulation model     
 
 
 \pagebreak
 
 
-## Model number of bats above a sheet   
+# Simulation model     
+
+In order to get a better sense of the observation process resulting in pooled samples with certain Ct values,   
+a number of aspects are investigated and simulated.   
+The last step is to combine these processes into one simulation model that generates realistic pooled underroost samples.    
+
+
+
+\pagebreak
+
+
+## Number of bats above a sheet   
 
 
 ```{r}
@@ -115,8 +121,6 @@ b0$season[which(month(b0$date) %in% c(9,10,11))] = "spring"
 table(b0$season)
 
 ```
-
-\vspace{50pt}   
 
 
 There are counts for 2 species, black flying foxes and grey-headed flying foxes.    
@@ -203,7 +207,7 @@ plot1 + plot2 + plot3
 \vspace{20pt}   
 
 
-Are higher numbers actually more rare, or just more uncertain?    
+**Are higher numbers actually more rare, or just more uncertain?**    
 
 ==> check lower confidence counts.     
 
@@ -277,12 +281,10 @@ plot1 + plot2 + plot3
 Lower-confidence counts are not higher, except for 2 ghff counts.    
 
 
-
-
 \vspace{20pt}   
 
 
-Are higher numbers actually more rare, or just written down as N+?    
+**Are higher numbers actually more rare, or just written down as N+?**    
 
 
 ```{r}
@@ -294,10 +296,9 @@ b4 = b0[grep("+", b0$bffm, fixed = T),]
 Not likely, there are only `r nrow(b4)` entries with a + sign,  
 and these are one of: `r unique(b4$bffm)`.    
 
+\vspace{20pt}   
 
-\pagebreak 
-
-Are there differences between sites?    
+**Are there differences between sites?**    
 
 
 \vspace{20pt}   
@@ -360,7 +361,7 @@ I didn't find anything in the notes, and the "bats" column mostly says "stable".
 
 \vspace{50pt}   
 
-Any difference between seasons?    
+**Any difference between seasons?**    
 
 Histograms for different seasons.    
 bff only, most data available, don't need figure overload.    
@@ -388,7 +389,7 @@ There seems to be an effect of season, that probably should be taken into accoun
 While spring and summer look like Poisson distributions,  
 autumn and winter seem closer to a mixture of a Bernoulli and a Poisson (probability of seeing any bats + if there are bats, how many).     
 
-==> Fit model to positive counts only, as simulating 0 bats will not be useful.    
+**==> Fit model to positive counts only, as simulating 0 bats will not be useful.**    
 
 ```{r}
 b1 = b1 %>%
@@ -486,8 +487,8 @@ fit.negbin1.autumn = fitdistr(b1$bffm.count[which(b1$season=="autumn")], densfun
 fit.negbin1.winter = fitdistr(b1$bffm.count[which(b1$season=="winter")], densfun = "negative binomial")
 
 fit.negbin1.seasons = data.frame(season = c("spring","summer","autumn","winter"),
-                               size = c(fit.negbin1.spring$estimate[1], fit.negbin1.summer$estimate[1], fit.negbin1.autumn$estimate[1], fit.negbin1.winter$estimate[1]),
-                               mu = c(fit.negbin1.spring$estimate[2], fit.negbin1.summer$estimate[2], fit.negbin1.autumn$estimate[2], fit.negbin1.winter$estimate[2]))
+                                 size = c(fit.negbin1.spring$estimate[1], fit.negbin1.summer$estimate[1], fit.negbin1.autumn$estimate[1], fit.negbin1.winter$estimate[1]),
+                                 mu = c(fit.negbin1.spring$estimate[2], fit.negbin1.summer$estimate[2], fit.negbin1.autumn$estimate[2], fit.negbin1.winter$estimate[2]))
 ```
 
 
@@ -602,7 +603,7 @@ ggplot(data = fit.plot, aes(x = x, y = y, color = season)) +
 
 
 **Conclusion:**     
-Bat count can be modeled adequately using a Negative Binomial distribution, with:    
+Bat count can be modeled quite well using a Negative Binomial distribution, with:    
 $N_{bats} \sim NegBinom(size = `r round(fit.negbin1$estimate[1],1)`, mu = `r round(fit.negbin1$estimate[2],1)`)$   
 
 
@@ -624,7 +625,7 @@ Considerations that need to be made when looking at this:
 
 
 
-\vspace{50pt} 
+\vspace{20pt} 
 
 How much urine can different numbers of bats produce?    
 What is the variation in collected urine volume, given a certain bat count?    
@@ -891,6 +892,8 @@ ggplot(data = sim.dat, aes(x = bat.count, y = pred.volume)) +
 
 
 
+
+
 \pagebreak    
 
 ## Shedding and Ct values    
@@ -899,20 +902,1128 @@ ggplot(data = sim.dat, aes(x = bat.count, y = pred.volume)) +
 What is the distribution of Ct values being shed by individuals?    
 How is this affected by buffer type?    
 How does this translate to genome copies / virions?    
-What is the distribution of Ct values being in underroost samples?    
+What is the distribution of Ct values in underroost samples where bat count = 1?    
+What is the distribution of Ct values in underroost samples for any bat count?    
 
 
-
-
-
-
-# Prevalence estimation model    
 
 ```{r}
+# import individual level catch/urine data
+# dbcon = preempt_database_connect("bennyborremans_preempt_creds.txt")
+# c0 = australia_catching_bat(dbcon)
+# saveRDS(c0,"australia_catching_bat.RDS")
+c0 = readRDS("australia_catching_bat.RDS")
+
+c0$acc_id = paste(c0$accession_update,c0$bat_id)
+
+# import dates
+# c1 = australia_catching_day_meta(dbcon)
+
+
+# import individual level virus data    
+# only keeping positive samples because we are interested in the distribution of positives
+# vir0 = hendra_cedar_results(dbcon)
+# saveRDS(vir0,"hendra_cedar_results.RDS")
+vir0 = readRDS("hendra_cedar_results.RDS") %>%
+       filter(grepl(pattern = "AC", x = accession_update)) %>%
+       filter(ct_hev > 0) %>%
+       mutate(sample_id = as.numeric(sample_id)) %>%
+       mutate(acc_id = paste(accession_update, sample_id))
+
+range(vir0$ct_hev)
+nrow(vir0)
+
+
+
+# merge virus and urine data 
+ct0 = left_join(x = vir0, y = c0[,c("accession_update","bat_id","acc_id","urine_avl_1_vol","urine_avl_2_vol","urine_avl_3_vol","urine_contam_1","urine_contam_2","urine_contam_3","urine_fresh_1","urine_fresh_2","urine_fresh_3","urine_nbu_1_vol","urine_nbu_2_vol","urine_nbu_3_vol","urine_vtm_1","urine_vtm_2","urine_vtm_3")], by = "acc_id")
+
+
+
+# import Ct to genome copies data
+ctgen = read.csv("Ct-to-genome-convert_HeV.csv", stringsAsFactors = F)
+# add genome_copies column
+ct0$gencop_hev = ctgen$Nml_hev[match(ct0$ct_hev, ctgen$ct_hev, nomatch = 0)]
+
+
+
+```
+
+
+Distribution of Ct values across buffers:    
+
+
+```{r fig.height = 4, fig.width = 12, out.width = "70%"}
+plot1 = ggplot(data = ct0, aes(ct_hev)) +
+       geom_histogram(fill = col.2.groups[1], color = "black") +
+       ggtitle("HeV Ct values (any buffer, any volume)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot2 = ggplot(data = ct0, aes(x = ct_hev, fill = preservative)) +
+       geom_histogram(position = 'dodge') +
+       ggtitle("HeV Ct values (any volume)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_fill_manual(values = col.2.groups) +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       scale_y_continuous(breaks = seq(0,15,by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot1 + plot2
+```
+
+
+\vspace{30pt}   
+
+
+Distribution of Ct values across buffers, only max volumes:    
+
+
+```{r fig.height = 4, fig.width = 12, out.width = "70%"}
+
+ct0$preservative_volume = NA
+
+for(i in 1:nrow(ct0)){
+       if(ct0$preservative[i]=="AVL") ct0$preservative_volume[i] = paste(ct0$preservative[i],ct0$urine_avl_1_vol[i])
+       if(ct0$preservative[i]=="VTM") ct0$preservative_volume[i] = paste(ct0$preservative[i],ct0$urine_vtm_1[i])
+}
+
+unique(ct0$preservative_volume)
+
+ct1 = ct0 %>% 
+       filter(preservative_volume %in% c("AVL 140", "VTM >=200uL"))
+
+plot1 = ggplot(data = ct1, aes(ct_hev)) +
+       geom_histogram(fill = col.2.groups[1], color = "black") +
+       ggtitle("HeV Ct values (any buffer, max volume only)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot2 = ggplot(data = ct1, aes(x = ct_hev, fill = preservative)) +
+       geom_histogram(position = 'dodge') +
+       ggtitle("HeV Ct values (max volume only)") +
+       xlab("Ct") +
+       ylab("Frequency count") +
+       scale_fill_manual(values = col.2.groups) +
+       scale_x_continuous(breaks = seq(20,40, by = 2)) +
+       scale_y_continuous(breaks = seq(0,15,by = 2)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+plot1 + plot2
+```
+
+
+\vspace{50pt}
+
+Is this distribution typical for any sampling time, or does it depend on transmission dynamics and seasonality?    
+Likely it is a combination of both.    
+Let's look at Ct values over time.    
+
+
+```{r}
+# need to import data first, but there an error when trying to download the data from the server (20220630)
+# contacted Nathan Justice about this
+
+
+# ggplot(data = ct0, aes(x = sample_date, y = ct_hev)) +
+#        geom_histogram(fill = col.2.groups[1], color = "black") +
+#        ggtitle("HeV Ct values (any buffer, any volume)") +
+#        xlab("Ct") +
+#        ylab("Frequency count") +
+#        scale_x_continuous(breaks = seq(20,40, by = 2)) +
+#        theme_light() +
+#        theme(plot.title  =  element_text(size = 11),
+#              text = element_text(size = 11),
+#              axis.text = element_text(size = 11),
+#              axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+#              plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+```
+
+
+\pagebreak
+
+
+Correlation between genome copies and Ct is log-linear:    
+
+
+```{r fig.height = 6, fig.width = 8, out.width = "40%"}
+ggplot(data = ctgen, aes(x = log(Nml_hev), y = ct_hev)) +
+       geom_point(color = col.2.groups[1]) +
+       ggtitle("HeV Ct values vs genome copies") +
+       xlab("Log ( genome copies (1/mL) )") +
+       ylab("Ct") +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+```
+
+
+Each increase in Ct translates to dividing the concentration by `r ctgen$Nml_hev[4]/ctgen$Nml_hev[5]`.    
+
+What does this mean for dilutions/pooling?
+I.e. when urine of a bat with a Ct value of 26 is mixed with the urine of a negative bat, what is the Ct value of the pooled sample?    
+We can create functions to convert Ct values and genome copy number,     
+which can be used to calculate expected Ct value given the contributions of different bats.    
+
+
+```{r}
+lm.ct.gencop = lm(ct_hev ~ log(Nml_hev), data = ctgen)
+lm.gencop.ct = lm(log(Nml_hev) ~ ct_hev, data = ctgen)
+
+
+gencop.to.ct.fun = function(gencop) {
+       # enter genome copies as actual number (not log-transformed)
+       # fitted values from lm(ct_hev ~ log(Nml_hev), data = ctgen)
+       return(46.606 + log(gencop) * -1.619)
+}
+
+ct.to.gencop.fun = function(ct) {
+       # fitted values from lm(log(Nml_hev) ~ ct_hev, data = ctgen)
+       return(exp(28.7818 - 0.6176 * ct))
+}
+
+ct.pooled.fun = function(ct) {
+       if(sum(ct) > 0) {
+              gencops = ct
+              gencops[which(gencops>0)] = ct.to.gencop.fun(ct[which(ct>0)])
+              pooled.ct = gencop.to.ct.fun(sum(gencops)/length(gencops))
+       } else {
+              pooled.ct = 0
+       }
+       
+       if(pooled.ct > 40) pooled.ct = 0
+       return(pooled.ct)
+}
+
+# Calculate Ct of pooled sample:
+gencop.to.ct.fun((ct.to.gencop.fun(28))*3)
+gencop.to.ct.fun((ct.to.gencop.fun(26.22666))/3)
+
+gencop.to.ct.fun((ct.to.gencop.fun(27)+ct.to.gencop.fun(29))/2)
+gencop.to.ct.fun((ct.to.gencop.fun(28)))
+
+
+```
+
+**Examples to build intuition:**    
+
+- Situation 1:   
+Two bats, one positive with Ct 24.    
+==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
+==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/2 = `r  ct.to.gencop.fun(24)/2`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun(ct.to.gencop.fun(24)/2)`.    
+
+\vspace{20pt}   
+
+- Situation 2:   
+Five bats, one positive with Ct 24.    
+==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
+==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/5 = `r  ct.to.gencop.fun(24)/5`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun(ct.to.gencop.fun(24)/5)`.    
+
+\vspace{20pt}   
+
+- Situation 3:   
+Ten bats, one positive with Ct 24.    
+==> Genome copies/mL of positive bat = `r  ct.to.gencop.fun(24)`.    
+==> Resulting genome copies/mL of pooled sample = `r  ct.to.gencop.fun(24)`/10 = `r  ct.to.gencop.fun(24)/10`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun(ct.to.gencop.fun(24)/10)`.    
+
+\vspace{20pt}   
+
+- Situation 4:   
+Three bats, one positive with Ct 24, one positive with Ct 28.    
+==> Genome copies/mL Ct 24 = `r  ct.to.gencop.fun(24)`.    
+==> Genome copies/mL Ct 28 = `r  ct.to.gencop.fun(28)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(24)` + `r  ct.to.gencop.fun(28)` + 0)/3  = `r  (ct.to.gencop.fun(24)+ct.to.gencop.fun(28))/3`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(28))/3)`.    
+
+\vspace{20pt}   
+
+- Situation 5:   
+Three bats, one positive with Ct 24, one positive with Ct 34.    
+==> Genome copies/mL Ct 24 = `r  ct.to.gencop.fun(24)`.    
+==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(24)` + `r  ct.to.gencop.fun(34)` + 0)/3  = `r  (ct.to.gencop.fun(24)+ct.to.gencop.fun(34))/3`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(24)+ct.to.gencop.fun(34))/3)`.    
+
+\vspace{20pt}   
+
+- Situation 6:   
+Three bats, one positive with Ct 26, one positive with Ct 34.    
+==> Genome copies/mL Ct 26 = `r  ct.to.gencop.fun(26)`.    
+==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(26)` + `r  ct.to.gencop.fun(34)` + 0)/3  = `r  (ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/3`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/3)`.    
+
+\vspace{20pt}   
+
+- Situation 7:   
+Five bats, one positive with Ct 26, one positive with Ct 34.    
+==> Genome copies/mL Ct 26 = `r  ct.to.gencop.fun(26)`.    
+==> Genome copies/mL Ct 34 = `r  ct.to.gencop.fun(34)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(26)` + `r  ct.to.gencop.fun(34)` + 0)/5  = `r  (ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/5`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(26)+ct.to.gencop.fun(34))/5)`.    
+
+\vspace{20pt}   
+
+- Situation 8:   
+Five bats, one positive with Ct 32, one positive with Ct 36.    
+==> Genome copies/mL Ct 32 = `r  ct.to.gencop.fun(32)`.    
+==> Genome copies/mL Ct 36 = `r  ct.to.gencop.fun(36)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(32)` + `r  ct.to.gencop.fun(36)` + 0)/5  = `r  (ct.to.gencop.fun(32)+ct.to.gencop.fun(36))/5`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(32)+ct.to.gencop.fun(36))/5)`.    
+
+\vspace{20pt}   
+
+- Situation 9:   
+Nine bats, one positive with Ct 27, one positive with Ct 32.    
+==> Genome copies/mL Ct 27 = `r  ct.to.gencop.fun(27)`.    
+==> Genome copies/mL Ct 32 = `r  ct.to.gencop.fun(32)`.    
+==> Resulting genome copies/mL of pooled sample = (`r  ct.to.gencop.fun(27)` + `r  ct.to.gencop.fun(32)` + 0)/9  = `r  (ct.to.gencop.fun(27)+ct.to.gencop.fun(32))/9`.    
+==> Resulting Ct of pooled sample = `r  gencop.to.ct.fun((ct.to.gencop.fun(27)+ct.to.gencop.fun(32))/9)`.    
+
+
+\pagebreak   
+
+To simulate Ct values, we will need a distribution of Ct values in the population.    
+One possibility is to use the distribution observed for all samples in the dataset, which ignores temporal variation.    
+The fitting model will allow any distribution, and will allow it to vary over time, but regardless of the shape there must be a distribution in order for the model to be informative.    
+
+AVL samples only.    
+Max volumes only.   
+
+Orange = cubic spline    
+Green = natural spline    
+Red = b-spline   
+Pink = lowess smoothing   
+
+The natural spline makes the most sense, so let's use that one for now.    
+
+
+```{r fig.height = 6, fig.width = 8, out.width = "40%"}
+ct2 = ct1 %>%
+       filter(preservative == "AVL")
+
+ct2.prob = as.data.frame(table(ct2$ct_hev))
+colnames(ct2.prob)[1] = "ct"
+ct2.prob$ct = as.numeric(as.character(ct2.prob$ct))
+ct2.prob$prob = ct2.prob$Freq/sum(ct2.prob$Freq)
+
+
+# fit smoothing splines
+ct2.ss = smooth.spline(x = ct2.prob$ct, y = ct2.prob$Freq, nknots = 5)
+ct2.prob$spline1 = ct2.ss$y
+
+require(splines)
+ct2.ss2 = lm(Freq ~ ns(ct, 4), data = ct2.prob)
+ct2.prob$spline2 = predict(ct2.ss2)
+
+ct2.ss3 = lm(Freq ~ bs(x = ct, knots = c(21,29,37), degree = 4), data = ct2.prob)
+ct2.prob$spline3 = predict(ct2.ss3)
+
+ct2.ss4 = lowess(x = ct2.prob$ct, y = ct2.prob$Freq, f = 0.4)
+ct2.prob$spline4 = ct2.ss4$y
+
+
+ggplot(data = ct2.prob, aes(x = ct, y = Freq)) +
+       geom_bar(stat = "identity", fill = col.no.groups, col = "black") +
+       ggtitle("HeV Ct value fitted frequency distributions\nAVL only, max volume only") +
+       geom_line(aes(x = ct, y = spline1), col = "orange", size = 1) +
+       geom_line(aes(x = ct, y = spline2), col = "green", size = 1) +
+       geom_line(aes(x = ct, y = spline3), col = "red", size = 1) +
+       geom_line(aes(x = ct, y = spline4), col = "pink", size = 1) +
+       xlab("Ct") +
+       ylab("Frequency") +
+       scale_x_continuous(breaks = 21:39) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+```
+
+
+Probability distribution:   
+
+```{r fig.height = 6, fig.width = 8, out.width = "40%"}
+
+# calculate probability distribution for full range of Ct values    
+ct.fit.prob = data.frame(ct = 21:39, 
+                         prob = predict(ct2.ss2, newdata = data.frame(ct = 21:39))/sum(predict(ct2.ss2, newdata = data.frame(ct = 21:39))))
+
+ggplot(data = ct.fit.prob, aes(x = ct, y = prob)) +
+       geom_line(col = col.no.groups, size = 2) +
+       ggtitle("HeV Ct value fitted probability distribution\nAVL only, max volume only") +
+       xlab("Ct") +
+       ylab("Probability") +
+       scale_x_continuous(breaks = 21:39) +
+       scale_y_continuous(limits = c(0,0.1)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
 
 ```
 
 
 
 
+\pagebreak   
+
+
+## Simulate data    
+
+Putting everything together, we can now simulate underroost sample Ct values.    
+
+One way to do this is a process following these steps:    
+
+1.  Choose a true prevalence in the population.     
+2.  For each sample, generate a number of contributing bats using the distribution fitted to the observed data.     
+3.  Assign a shedding status (neg/pos) to each of the bats, given the true prevalence.    
+4.  To each positive bat, assign a Ct value given a provided probability distribution.    
+5.  Calculate the resulting Ct value of the pooled sample, assuming equal contributions from each bat.    
+
+\vspace{10pt}  
+
+Code:   
+
+\vspace{30pt} 
+
+```{r echo=T}
+# 1.  Choose a true prevalence in the population.   
+true.prev = 0.15
+
+# 2.  For each sample, generate a number of contributing bats 
+# using the distribution fitted to the observed data.     
+set.seed(123)
+n.bat = rnbinom(1, size = 29.88, mu = 2.336)
+
+# 3.  Assign a shedding status (neg/pos) to each of the bats, 
+# given the true prevalence.    
+bat.status = rbinom(n = n.bat, size = 1, prob = true.prev)
+
+# 4.  To each bat, assign a Ct value given a provided probability distribution.    
+bat.ct = bat.status
+bat.ct[which(bat.ct > 0)] = sample(ct.fit.prob$ct, size = sum(bat.status), 
+                                   replace = T, prob = ct.fit.prob$prob)
+
+# 5.  Calculate the resulting Ct value of the pooled sample, 
+# assuming equal contributions from each bat.    
+ct.pooled = ct.pooled.fun(bat.ct)
+
+
+
+# let's put this all into one function to make simulations easier
+ur.sim.fun = function(prev, n){
+       
+       out.sim = vector(mode = "list", length = n+1)
+       out.sim[[1]] = data.frame(ct = numeric(n), n.bat = numeric(n))
+       
+       for(i in 1:n){
+              n.bat = max(1,rnbinom(1, size = 29.88, mu = 2.336))   # at least 1 bat
+              bat.status = rbinom(n = n.bat, size = 1, prob = prev)
+              bat.ct = bat.status
+              bat.ct[which(bat.ct > 0)] = sample(ct2.prob$ct, size = sum(bat.status), 
+                                                 replace = T, prob = ct2.prob$prob)
+              ct.pooled = ct.pooled.fun(bat.ct)
+              
+              out.sim[[1]][i,1] = ct.pooled
+              out.sim[[1]][i,2] = n.bat
+              out.sim[[i+1]] = bat.ct
+       }
+       
+       
+       return(out.sim)
+       # first item of output list = data frame with pooled sample ct values, 
+       # and corresponding number of bats
+       # remaining items are the Ct values of each bat of each pooled sample
+}
+```
+
+
+Example output:   
+
+```{r}
+set.seed(15)
+ur.sim.fun(prev = 0.15, n = 9)
+```
+
+
+
+
+\pagebreak   
+
+
+# Prevalence estimation model    
+
+
+
+Given a few assumptions, we can now estimate shedding prevalence using the probability of seeing a certain Ct value in a pooled sample, 
+given the number of contributing bats and given a distribution describing the individual probability of shedding at a certain Ct value.
+
+\vspace{10pt}
+
+Model assumptions are:   
+- The number of contributing bats is known.     
+- Each bat contributes the same amount.    
+- A probability distribution of individual Ct value is known (based on catch data), and is valid for the study bat population.    
+- Concentrations (Ct) in samples do not change after shedding (e.g. evaporation does not change concentration).   
+
+\vspace{15pt}
+
+The data show that there is huge variation in shedding volume, and although there is a small statistically discernible sign that evaporation affects volume, we don't have the data to estimate a correction factor for the evaporation effect that links the individual Ct probability distribution and the Ct value of the pooled sample.    
+This means that we have to ignore this effect of evaporation, and hence assume that there is none.   
+
+\vspace{15pt}
+
+The assumption of known number of contributing bats is less strict.    
+Although the current (2022-07-26) version of the model assumes that numbers are known,  
+it is possible to allow uncertainty in this number (by treating the number of bats contributing to a sample as a parameter to be estimated, with a prior distribution informed by actual information, which can be something like "3-5 bats").    
+For now though, we assume that the number is known.    
+
+\vspace{15pt}
+
+The probability distribution of individual Ct values can be estimated using catch data.    
+There are two obvious possible problems with this:   
+- Not enough data.   
+- Distribution changes over time (or seasonally, multi-annually, etc).    
+Theoretically, given a sufficiently large positive catch sample size, it would be possible to estimate a Ct probability distribution for every sampling session.   
+In reality though this will be hard, and periods will have to be pooled.    
+This means assuming that Ct distributions are the same for these pooled periods.    
+Currently we have one Ct distribution for the entire period, and we need to think whether this is a fair (not-too-wrong) assumption.     
+
+\vspace{20pt}
+
+**Model equations**     
+
+\vspace{10pt}
+
+$Ct_i \sim PooledCt(N_i,\theta_i)$    
+
+PooledCt = probability distribution to calculate likelihood for observing a Ct value in a pooled sample:    
+$PooledCt = \displaystyle\sum_{x=0}^{N_i} {N_i \choose x} \theta^x (1-\theta)^{N_i-x} P(Ct|x,N_i)$,    
+where     
+$P(Ct|x,N_i)$ is calculated independently for each combination of $N$, $x$ and $Ct$.     
+(see next section for details).     
+
+$\theta_i \sim Beta(\theta_{true} * \phi, (1-\theta_{true} * \phi)$
+
+Priors:     
+$\theta_{true} \sim Beta(1,1)$
+$\phi \sim Gamma(2,1)$  (variation parameter, small values allow more variation, which is necessary here because the small sample sizes (N bats contributing to a pooled sample) need a lower resolution.    
+
+
+$i$ = pooled sample    
+$Ct$ = Ct value of a pooled sample     
+$N$ = number of bats contributing to a pooled sample    
+$\theta_i$ = "prevalence" in a pooled sample (proportion of positive bats contributing to the pooled sample), follows a distribution with mean $\theta_{true}$     
+$\theta_{true}$ = true shedding prevalence in the population     
+
+
+
+\pagebreak
+
+
+## Probability distributions for pooled Ct - N pos combinations    
+
+
+For each pooled underroost sample, we need to calculate the likelihood that it could have resulted from N bats of which X were positive with Ct values Y_x.   
+
+This can be done by first calculating all the probabilities, and then using these in the full model.   
+(As opposed to developing a complicated algorithm that does it every iteration).    
+
+The result with be a 3-dimensional table with dimensions:    
+1. N positive    
+2. N total   
+3. Pooled Ct    
+
+For example, if a sample has a Ct of 28 with 4 bats above the sheet, and a suggested number of positive bats of 2, 
+we will be able to look up the sum of the probabilities of each possible combination of 2 Ct values diluted with 2 negative samples.    
+That is done using the individual-level probability distribution of Ct values.   
+
+
+
+```{r}
+
+
+# concise version of how probabilities are calculated:
+# for example only Ct values 21, 22 and 23 are possible
+# 2 positive bats
+n.pos = 2
+# 2 negative bats
+n.neg = 2
+# observed Ct of pooled sample = 23   
+observed.ct = 23 
+
+# 1. make a table of all possible combinations of Ct values (after converting to genome copies):
+# 1a. make table of positive combinations
+combs.pos = expand.grid(rep(list(ct.to.gencop.fun(c(21,22,23))),n.pos))
+# 1b. add in negatives
+combs = cbind(combs.pos,matrix(data = 0, ncol = n.neg, nrow = nrow(combs.pos)))
+
+# 2. calculate means for each combination, including the negatives
+comb.means.gencop = apply(combs, MARGIN = 1, mean)
+
+# 3. convert back to Ct values
+comb.means.ct = gencop.to.ct.fun(comb.means.gencop)
+
+# 4. round up to nearest round Ct value (reasoning = when doing PCR, a concentration that is technically at e.g. Ct 34.1 won't be detected at Ct = 34, but will be detected at Ct = 35.
+comb.means.ct.round = ceiling(comb.means.ct)
+
+# 5. determine combinations that result in Ct values equal to that of the pooled sample
+comb.possible.idx = which(comb.means.ct.round == observed.ct)
+
+# 6. for the possible combinations, sum all probabilities
+# 6a. replicate combinations dataframe using probabilities
+comb.probs = expand.grid(rep(list(ct.fit.prob[1:3,2]),n.pos))
+
+# 6b. calculate the total probability of all combinations
+comb.prob.sum.total = sum(comb.probs)
+
+# 6c. sum probabilities of selected combinations
+comb.prob.sums = apply(comb.probs[comb.possible.idx,],MARGIN = 1, sum)
+
+# 6d. sum the sums
+comb.prob.sum.sums = sum(comb.prob.sums)
+
+# 6e. normalize the probabilities
+comb.prob.sum.sums.normalized = comb.prob.sum.sums/comb.prob.sum.total
+
+# ==> this is the likelihood of observing a pooled Ct of 23 given 2 positive and 2 negative bats.
+# it is calculated by first determining which combinations of Ct values can result in the pooled Ct value,
+# then calculating the sum of all probabilities that those Ct values can occur in an individual (using the individual-level probability distribution).
+# (e.g. bat 1 = Ct 23, bat 2 = Ct 24, so sum is 0.03196287 + 0.03524308. each combination will at the end have been counted twice, as bat 1 = 24 and bat 2 = 23 is another possibility)
+# this is then normalized by dividing by the sum of all Ct value combinations.
+# resulting in the total probability of getting a certain pooled Ct value when there are 2 positive and 2 negative bats.
+# (in the model, this probability is then multiplied by the probability of having 2 positive bats, which accounts for the neg/pos probability)
+
+
+
+```
+
+
+
+```{r}
+# full version, all Ct values
+# one example
+
+# concise version of how probabilities are calculated:
+# for example only Ct values 21, 22 and 23 are possible
+# 3 positive bats
+n.pos = 3
+# 5 negative bats
+n.neg = 5
+# observed Ct of pooled sample = 28     
+observed.ct = 28
+
+# 1. make a table of all possible combinations of Ct values (after converting to genome copies):
+# 1a. make table of positive combinations
+combs.pos = expand.grid(rep(list(ct.to.gencop.fun(21:39)),n.pos))
+# 1b. add in negatives
+combs = cbind(combs.pos,matrix(data = 0, ncol = n.neg, nrow = nrow(combs.pos)))
+
+# 2. calculate means for each combination, including the negatives
+comb.means.gencop = apply(combs, MARGIN = 1, mean)
+
+# 3. convert back to Ct values
+comb.means.ct = gencop.to.ct.fun(comb.means.gencop)
+
+# 4. round up to nearest round Ct value (reasoning = when doing PCR, a concentration that is technically at e.g. Ct 34.1 won't be detected at Ct = 34, but will be detected at Ct = 35.
+comb.means.ct.round = ceiling(comb.means.ct)
+
+# 5. determine combinations that result in Ct values equal to that of the pooled sample
+comb.possible.idx = which(comb.means.ct.round == observed.ct)
+
+# 6. for the possible combinations, sum all probabilities
+# 6a. replicate combinations dataframe using probabilities
+comb.probs = expand.grid(rep(list(ct.fit.prob[,2]),n.pos))
+
+# 6b. calculate the total probability of all combinations
+comb.prob.sum.total = sum(comb.probs)
+
+# 6c. sum probabilities of selected combinations
+comb.prob.sums = apply(comb.probs[comb.possible.idx,],MARGIN = 1, sum)
+
+# 6d. sum the sums
+comb.prob.sum.sums = sum(comb.prob.sums)
+
+# 6e. normalize the probabilities
+comb.prob.sum.sums.normalized = comb.prob.sum.sums/comb.prob.sum.total
+
+# ==> this is the probability of observing a pooled Ct of 28 given 3 positive and 5 negative bats.
+
+
+
+```
+
+
+
+```{r}
+
+range.Ntotal = 1:15   # taking a maximum of 15 because beyond that the number of possible combinations of Ct values becomes very large. algorithm can be changed however to accommodate for larger sample sizes, that will just take much longer to process
+range.Npos = 0:15
+range.Ct = c(0,21:39)
+ct.prob.array = array(data = 0, dim = c(length(range.Npos), length(range.Ntotal), length(range.Ct)), dimnames = list(Npos = range.Npos,
+                                                                                                                     Ntotal = range.Ntotal,
+                                                                                                                     Ct = range.Ct))
+# values of 0 in ct.prob.array were NA at first because they don't exist, but stan complains when there are NA's in arrays so need a value
+
+
+# function to calculate number of combinations
+n.comb.fun = function(n.elements, n.samples) factorial(n.samples + n.elements - 1)/(factorial(n.samples) * factorial(n.elements - 1))
+
+
+# this takes a long time, so the output is saved after the first run for quick import
+
+
+# super fast combination function used to calculate sums below
+# comboGeneral(21:39,m=20, repetition = T, lower = 1, upper = 10000)
+# comboGeneral(1:3,m=2, repetition = T, FUN = function(x) mean(x), FUN.VALUE = 1.0)
+# 
+# n.comb.fun(19, 20)/1000
+# comboGeneral(21:39,m=20, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0, lower = 1, upper = 33578001)
+# comboGeneral(21:39,m=10, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0)
+
+
+# function to calculate number of permutations with repetition, and multiply this by the sum of the elements
+# https://www.ck12.org/c/probability/permutations-with-repetition/lesson/Permutations-with-Repetition-BSC-PST/
+# this is to calculate the total probability of observing a certain combination of Ct values, taking into account the permutations
+# example: prod(factorial(as.numeric(table(c(1,1,1,2,3)))))
+n.perm.fun = function(x) factorial(length(x)) / prod(factorial(as.numeric(table(x))))
+n.perm.sum.fun = function(x) sum(x) * (factorial(length(x)) / prod(factorial(as.numeric(table(x)))))
+# comboGeneral(1:3,m=4, repetition = T) 
+# comboGeneral(1:3,m=4, repetition = T, FUN = n.perm.fun, FUN.VALUE = 1)
+
+# time functions (same time)
+# t0 = Sys.time()
+# comboGeneral(1:15,m=9, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0)
+# t1 = Sys.time() - t0
+# 
+# t0 = Sys.time()
+# comboGeneral(1:15,m=9, repetition = T, FUN = n.perm.fun, FUN.VALUE = 1.0)
+# t2 = Sys.time() - t0
+
+
+
+run.again = F
+if(run.again == T) {
+       
+       # first, for each number of positives calculate the sums of all possible ct (genome copy) combinations. 
+       # that list of sums will be used later instead of having to compute all combinations every time
+       
+       # separate into 1:10 and 11:15, because the larger ones need to be split up for computation
+       for(i in 1:10) {
+              gc()
+              
+              # calculate sums of genome copy combinations
+              cur.sums.gencop = comboGeneral(ct.to.gencop.fun(21:39),m=i, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0)
+              
+              # calculate sums of probabilities
+              cur.sums.probs = comboGeneral(ct.fit.prob[,2],m=i, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0)
+              
+              saveRDS(cur.sums.gencop, paste0("genome.copy.sum.list.",i,".RDS"))
+              rm(cur.sums.gencop)
+              saveRDS(cur.sums.probs, paste0("probs.sum.list.",i,".RDS"))
+              rm(cur.sums.probs)
+              
+              print(i)
+       }
+       
+       for(i in 11:15) {
+              gc()
+              
+              cur.sums.gencop = numeric(n.comb.fun(19, i))
+              cur.sums.probs = numeric(n.comb.fun(19, i))
+              teller = 1
+              for(j in 1:100){
+                     cur.sums.gencop[teller:((teller+n.comb.fun(19, i)%/%100)-1)] = comboGeneral(ct.to.gencop.fun(21:39),m=i, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0, lower = teller, upper = ((teller+n.comb.fun(19, i)%/%100)-1))
+                     cur.sums.probs[teller:((teller+n.comb.fun(19, i)%/%100)-1)] = comboGeneral(ct.fit.prob[,2],m=i, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0, lower = teller, upper = ((teller+n.comb.fun(19, i)%/%100)-1))
+                     teller = teller + n.comb.fun(19, i)%/%100
+                     print(paste0("i = ",i, ", j = ",j))
+              }
+              # for the remainder:
+              if(teller < n.comb.fun(19, i)) {
+                     cur.sums.gencop[teller:n.comb.fun(19, i)] = comboGeneral(ct.to.gencop.fun(21:39),m=i, repetition = T, FUN = function(x) sum(x), FUN.VALUE = 1.0, lower = teller)
+                     cur.sums.probs[teller:n.comb.fun(19, i)] = comboGeneral(ct.fit.prob[,2],m=i, repetition = T, FUN = n.perm.sum.fun, FUN.VALUE = 1.0, lower = teller)
+              }
+              
+              saveRDS(cur.sums.gencop, paste0("genome.copy.sum.list.",i,".RDS"))
+              rm(cur.sums.gencop)
+              saveRDS(cur.sums.probs, paste0("probs.sum.list.",i,".RDS"))
+              rm(cur.sums.probs)
+       }
+       
+       
+       
+       for(i in 1:length(range.Ct)){
+              
+              gc()
+              
+              cur.ct = range.Ct[i]
+              
+              for(j in 1:length(range.Ntotal)){
+                     
+                     cur.n.total = range.Ntotal[j]
+                     
+                     for(k in 2:(cur.n.total+1)){
+                            
+                            
+                            cur.n.pos = range.Npos[k]
+                            
+                            # read in sums of genome copies and probabilities
+                            # necessary to import every time so that the memory can be cleared (otherwise vector memory exhausted at large npos),
+                            # even though this slows things down a bit
+                            cur.sums.perms = readRDS(paste0("genome.copy.sum.list.",cur.n.pos,".RDS"))
+                            cur.sums.probs = readRDS(paste0("probs.sum.list.",cur.n.pos,".RDS"))
+                            
+                            # calculate mean for each combination, including the negatives (i.e. divide by total number, not just by number of positives)
+                            comb.means.gencop = cur.sums.perms/cur.n.total
+                            rm(cur.sums.perms);gc()
+                            
+                            # convert means to ct values
+                            comb.means.ct = round(gencop.to.ct.fun(comb.means.gencop),1)    # rounding to 1 decimal digit because the conversion can add some unexisting Ct val
+                            rm(comb.means.gencop);gc()
+                            
+                            # round up to nearest round Ct value (reasoning = when doing PCR, a concentration that is technically at e.g. Ct 34.1 won't be detected at Ct = 34, but will be detected at Ct = 35.
+                            comb.means.ct.round = ceiling(comb.means.ct)
+                            rm(comb.means.ct);gc()
+                            
+                            # transform all ct values equal to or larger than 40 to 0
+                            comb.means.ct.round[comb.means.ct.round > 39] = 0
+                            
+                            # determine combinations that result in Ct values equal to that of the pooled sample
+                            comb.possible.idx = which(comb.means.ct.round == cur.ct)
+                            rm(comb.means.ct.round);gc()
+                            if(length(comb.possible.idx) == 0) cur.prob = 0
+                            if(length(comb.possible.idx) > 0) {
+                                   
+                                   # sum probabilities of selected combinations, normalized
+                                   cur.prob = sum(cur.sums.probs[comb.possible.idx])/sum(cur.sums.probs)
+                                   rm(comb.possible.idx, cur.sums.probs);gc()
+                                   
+                            }
+                            ct.prob.array[k,j,i] = cur.prob
+                            print(paste0("Ct = ",cur.ct,", Npos = ", cur.n.pos, ", Ntotal = ",cur.n.total,", Prob = ",cur.prob))
+                            rm(cur.prob);gc()
+                     }
+                     
+                     if(cur.ct == 0) {
+                            ct.prob.array[1,j,i] = 1 - sum(ct.prob.array[,j,i])
+                     } else {
+                            # normalize probabilities (sum to 1 per Ntotal)
+                            ct.prob.array[,j,i] = round(ct.prob.array[,j,i]/sum(ct.prob.array[,j,i],na.rm=T),5)
+                     }
+                     print(ct.prob.array[,j,i])
+              }
+       }
+       saveRDS(ct.prob.array, "ct.prob.array.RDS")
+} else {
+       ct.prob.array = readRDS("ct.prob.array.RDS")
+}
+
+
+# sanity check
+# ct.prob.array[,,1:2]
+# ct.prob.array[,,3:4]
+# ct.prob.array[,,15:16]
+# ct.prob.array[,,19:20]
+# ct.prob.array[1:2,,]
+
+
+```
+
+
+\pagebreak    
+
+## Model stan
+
+
+```{r echo=T}
+
+stan.model.ur.prev.Ct = 
+       "
+       functions {
+              
+              // function to calculate binomial probability density, couldn't find non-log version in stan 
+              real dbin(int npos, int ntotal, real prob){
+                     real probdens;
+                     probdens = choose(ntotal, npos) * prob^npos * (1-prob)^(ntotal-npos);
+                     return(probdens);
+              }
+              
+              // probability mass function (lpmf)
+              real ct_prob_lpmf(int ct, int nbat, real prev, real[] ct_probs){
+                     // first convert prevalence to indexable number of positives in a roundabout way, as stan doesn't accept rounded real values for indexing, and doesn't convert to integers
+                     int npos; // variable to index ct_probs
+                     real lprob; // likelihood    
+                     real ctprob[nbat+1];       // vector for probabilities
+                     //int npos_index[nbat+1];
+                     
+                     // population index vector (stan doesn't allow 0:nbat
+                     //for(i in 1:(nbat+1) npos_index = 
+                     
+                     // calculate P(Ct | prev, nbat) for each npos
+                     for(n in 1:(nbat+1)) {
+                            ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
+                     }
+                     
+
+                     lprob = log(sum(ctprob));   
+                     
+                     return lprob;
+              }
+              
+       }
+       
+       data {
+              int<lower=1> N;      // number of samples
+              int Ct[N];        // Ct of each sample
+              int ct_index[N];        // index of each ct value in ct_array
+              int bat_count[N]; // number of bats above the sheet
+              int Ct_prob_Npos;
+              int Ct_prob_Ntotal;
+              int Ct_prob_Ct;
+              real<lower=0, upper = 1> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
+       }
+
+       parameters {
+              real<lower=0,upper=1> prev_ur;
+              real<lower=0,upper=1> prev_ind[N];
+              real<lower=0> phi;
+              
+       }
+       
+       model {
+              phi ~ gamma(2,1);       // larger values = lower variance, less heterogeneity in the outcome data
+              prev_ur ~ beta(1,1);
+              
+              for(i in 1:N) {
+                     prev_ind[i] ~ beta(prev_ur * phi, (1 - prev_ur) * phi);      
+                     Ct[i] ~ ct_prob(bat_count[i], prev_ind[i], ct_array[,bat_count[i],ct_index[i]]);
+              }
+       }
+
+       "
+```
+
+
+\vspace{50pt}    
+
+
+### Simulation test 1    
+
+Simulated "true" prevalence = 0.27    
+N = 40    
+
+```{r}
+# simulate some data, see higher
+sim.prev = 0.27
+sim.N = 40
+set.seed(222)
+simdat = ur.sim.fun(prev = sim.prev, n = sim.N)
+
+# round Ct values, same way as that used to calculate probabilities
+sim.Ct = ceiling(round(simdat[[1]][,1],1))
+
+# change 40 to 0
+sim.Ct[sim.Ct==40] = 0
+
+sim.bat.count = simdat[[1]][,2]
+
+# index for ct_array
+ct.index = numeric(sim.N)
+ct.index[sim.Ct==0] = 1
+ct.index[sim.Ct>0] = sim.Ct[sim.Ct>0] - 19
+
+```
+
+The simulated Ct values: `r sim.Ct`.    
+Number of bats per pooled sample: `r sim.bat.count`.    
+
+
+
+```{r}
+
+model.fit = stan(model_code = stan.model.ur.prev.Ct,
+                 data = list(N = sim.N,
+                             Ct = sim.Ct,
+                             ct_index = ct.index,
+                             bat_count = sim.bat.count,
+                             Ct_prob_Npos = dim(ct.prob.array)[1],
+                             Ct_prob_Ntotal = dim(ct.prob.array)[2],
+                             Ct_prob_Ct = dim(ct.prob.array)[3],
+                             ct_array = ct.prob.array),
+                 chains = 4,
+                 warmup = 4000,  
+                 iter = 8000,     
+                 cores = 4) 
+
+```
+
+
+```{r fig.height = 9, fig.width = 5, out.width = "30%"}
+# means = 
+means = summary(model.fit)$summary[,1]
+
+
+fit.posterior = as.array(model.fit)
+
+mcmc_areas(fit.posterior[,,1],
+           prob = 0.8,
+           prob_outer = 0.95)
+```
+
+
+```{r fig.height = 10, fig.width = 12, out.width = "90%"}
+mcmc_trace(fit.posterior[,,1:10])
+```
+
+
+```{r fig.height = 10, fig.width = 7, out.width = "40%"}
+# compare simulated samples and individual estimated prevalence
+simdat[2:10]
+sim.Ct[1:9]
+mcmc_areas(fit.posterior[,,2:10],
+           prob = 0.8,
+           prob_outer = 0.95)
+```
+
+
+```{r fig.height = 10, fig.width = 7, out.width = "40%"}
+simdat[11:20]
+sim.Ct[10:19]
+mcmc_areas(fit.posterior[,,11:20],
+           prob = 0.8,
+           prob_outer = 0.95)
+
+
+
+```
+
+\pagebreak
+
+### Simulation test 2    
+
+
+Simulated "true" prevalence = 0.62      
+N = 40    
+
+
+```{r}
+# simulate some data, see higher
+sim.prev = 0.62
+sim.N = 40
+set.seed(2222)
+simdat = ur.sim.fun(prev = sim.prev, n = sim.N)
+
+# round Ct values, same way as that used to calculate probabilities
+sim.Ct = ceiling(round(simdat[[1]][,1],1))
+
+# change 40 to 0
+sim.Ct[sim.Ct==40] = 0
+
+sim.bat.count = simdat[[1]][,2]
+
+# index for ct_array
+ct.index = numeric(sim.N)
+ct.index[sim.Ct==0] = 1
+ct.index[sim.Ct>0] = sim.Ct[sim.Ct>0] - 19
+
+```
+
+The simulated Ct values: `r sim.Ct`.    
+Number of bats per pooled sample: `r sim.bat.count`.    
+
+
+
+
+```{r}
+
+model.fit = stan(model_code = stan.model.ur.prev.Ct,
+                 data = list(N = sim.N,
+                             Ct = sim.Ct,
+                             ct_index = ct.index,
+                             bat_count = sim.bat.count,
+                             Ct_prob_Npos = dim(ct.prob.array)[1],
+                             Ct_prob_Ntotal = dim(ct.prob.array)[2],
+                             Ct_prob_Ct = dim(ct.prob.array)[3],
+                             ct_array = ct.prob.array),
+                 chains = 4,
+                 warmup = 4000,  
+                 iter = 8000,     
+                 cores = 4) 
+
+```
+
+
+```{r fig.height = 10, fig.width = 7, out.width = "30%"}
+means = summary(model.fit)$summary[,1]
+means
+
+fit.posterior = as.array(model.fit)
+
+mcmc_areas(fit.posterior[,,1:5],
+           prob = 0.8,
+           prob_outer = 0.95)
+```
+
+
+```{r fig.height = 10, fig.width = 12, out.width = "90%"}
+mcmc_trace(fit.posterior[,,1:10])
+```
+
+
+```{r fig.height = 10, fig.width = 7, out.width = "40%"}
+# compare simulated samples and individual estimated prevalence
+simdat[2:10]
+sim.Ct[1:9]
+mcmc_areas(fit.posterior[,,2:10],
+           prob = 0.8,
+           prob_outer = 0.95)
+
+simdat[11:20]
+sim.Ct[10:19]
+mcmc_areas(fit.posterior[,,11:20],
+           prob = 0.8,
+           prob_outer = 0.95)
+
+
+
+```
 
