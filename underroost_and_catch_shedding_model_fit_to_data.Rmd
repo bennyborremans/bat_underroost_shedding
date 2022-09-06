@@ -1,0 +1,1482 @@
+---
+title: "Bat virus underroost and catch shedding model"
+author: "Benny Borremans"
+output:
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+    df_print: paged
+---
+
+```{r global_options, include = FALSE,results='hide'}
+knitr::opts_chunk$set(echo = FALSE, results = 'hide',warning = FALSE, message = FALSE,tidy.opts=list(width.cutoff=90),fig.height=4,fig.width=4,dev='pdf',fig.align='center',out.width = "70%")
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))  # set file folder as working directory, need to save file first
+
+library(tidyverse) # data handling
+library(ggplot2) # plotting
+library(patchwork) # combine plots
+library(RColorBrewer) # use color palette brewer
+library(lubridate)   # date manipulations
+library(MASS) # fit distributions 
+library(brms)   # bayesian regression models with stan, through brms   
+library(rstan)   # bayesian regression models with stan, through rstan
+library(RcppAlgos) # for comboGeneral function
+library(bayesplot)
+library(splines)   # to generate prevalence over time
+library(ggridges)  # for vertical density plots
+library(HDInterval)   # for density plots with 95% CrI in ggplot   
+library(shinystan)  # interactively check output stan models
+
+
+# set colors for plots 
+col.no.groups = brewer.pal(n = 11,"RdYlBu")[4]
+col.2.groups = brewer.pal(n = 11,"RdYlBu")[c(1,10)]
+col.4.groups = brewer.pal(n = 11,"RdYlBu")[c(1,4,8,11)]
+col.6.groups = brewer.pal(n = 11,"RdYlBu")[c(1,3,5,7,9,11)]
+
+# add functions
+logit.fun = function(x) log(x/(1-x))
+
+# theme settings
+theme.settings = theme(plot.title  =  element_text(size = 14),
+             text = element_text(size = 14),
+             axis.text = element_text(size = 14),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+```
+
+\vspace{20pt}
+
+[bennyborremans@bbresearch.org](mailto:bennyborremans@bbresearch.org){.email}
+
+\vspace{10pt}
+
+Last update: `r format(Sys.Date(),"%d %b %Y")`.
+
+\vspace{10pt}
+
+The table of contents can be clicked to jump straight to specific sections.
+
+\pagebreak
+
+
+
+
+
+# Import and prepare data    
+
+
+```{r fig.show = 'hide', results = 'hide'}
+# code from Caylee - "immune_data_analysis_attempt_cf_2022_01_26_toshare.Rmd".    
+
+
+# compiled immune data
+# list.files()
+imm = read.csv("compiled_immuno_data_2022_01_26.csv") # this does not have luminex but it does have cort
+
+
+
+imm2 = imm %>%
+       mutate(bat_age = factor(bat_age, levels =c("dep_pup", "juve", "sub_adult", "adult")),
+              season = factor(imm$season, levels = c("fall", "winter", "spring", "summer")),
+              date = as.Date(imm$date),
+              unique_ID = as.character(unique_ID))  # same class as vir2, for merging
+
+plot(imm2$date)
+       
+
+## read in the viral shedding data 
+# vir <- hendra_cedar_results(dbcon) 
+# shed <- hendra_cedar_results_summary(dbcon,   group_by = c ("accession_update")) # just catching data; but nice summary
+# saveRDS(vir,"vir.RDS")
+vir = readRDS("vir.RDS")
+
+## read in meta data
+# meta <- australia_sites(dbcon) # this has all the dates associated w catching and UR; just use "date_start"
+# saveRDS(meta,"meta.RDS")
+meta = readRDS("meta.RDS")
+
+## extract dates
+dates <- meta %>%
+       dplyr::select(accession_update, date_start) %>%
+       filter(!grepl("AEZ", accession_update)) # these are samples i got from the zoo, remove
+
+
+## clean up a bit and merge w dates
+vir2 <- vir %>%
+       mutate(bat_id = sprintf("%02d", as.numeric (sample_id))) %>% # make sure all ids are 2 digits so it always merges right
+       mutate(unique_ID = paste(accession_update, bat_id, sep = "_"))
+
+vir2 <- merge(dates, vir2, by = "accession_update") # adding in dates
+
+## convert ct values to 0 or 1 for all these tested samples. easy but prob not ideal, could use Ct somehow
+vir2$hev <- vir2$ct_hev
+vir2$hev[vir2$ct_hev>=21] <- 1  # theyre either 0 or 21+
+vir2$hev <- as.numeric (as.character(vir2$hev))
+
+## plot, double checking the shedding dat makes sense
+vir2 = vir2 %>%
+       mutate (site = gsub("AC", "", accession_update)) %>% 
+       mutate (site = gsub("AR", "", site)) %>% 
+       mutate (site = gsub('[0-9]', '', site))
+
+vir2 %>%
+       filter(grepl ("RED", site) |grepl ("TOW", site) | grepl ("CLU", site) | grepl ("SUN", site)  ) %>%  # these are the sites w serum samples at MSU
+       ggplot() + 
+       geom_point (aes (x = date_start, y = ct_hev)) + facet_wrap (~site)
+
+
+# check for duplicates in virus data
+dup.id = unique(vir2$unique_ID[which(duplicated(vir2$unique_ID))])
+length(dup.id)
+# View(vir2[which(vir2$unique_ID %in% dup.id),])
+length(which(vir2$unique_ID %in% dup.id))
+
+# select duplicates in virus dataset: keep the lowest HeV Ct over a higher one or a zero, if all are zero just keep the first one
+remove.idx = c()
+for(i in 1:length(dup.id)){
+       cur.idx = which(vir2$unique_ID == dup.id[i])
+       cur.dat = vir2[cur.idx,]
+       if(any(cur.dat$ct_hev > 0)){
+              lowest.pos.ct.idx = which.min(cur.dat$ct_hev[which(cur.dat$ct_hev>0)])[1]
+              remove.idx = c(remove.idx, cur.idx[-lowest.pos.ct.idx])
+       } else {
+              remove.idx = c(remove.idx, cur.idx[-1])
+       }
+}
+
+length(remove.idx)
+
+vir3 = vir2[-remove.idx,]
+
+vir3$catch.or.ur = NA
+vir3$catch.or.ur[grep("AR",vir3$accession_update)] = "ur"
+vir3$catch.or.ur[grep("AC",vir3$accession_update)] = "catch"
+
+
+
+# check for duplicates in immune data
+dup.id = imm2$unique_ID[which(duplicated(imm2$unique_ID))]
+# View(imm2[which(imm2$unique_ID %in% dup.id),])
+
+# WILL NEED TO BE FIXED LATER
+
+
+# add virus data to immune data
+
+imm3 = left_join(x = imm2, y = vir3[,c("ct_cedpv","ct_hev","unique_ID","hev")],by = "unique_ID")
+
+
+
+plot(imm3$date)
+
+
+
+# assign session numbers to trapping data
+# every session at each site that is within a two-week period is considered the same session
+# only for RED and TOW
+meta = meta %>%
+       mutate(date_start = as.Date(meta$date_start)) %>%
+       arrange(date_start)
+
+meta$session.num = NA
+meta$session.date = as.Date("2000-01-01") # to make sure class = date
+
+red.idx = which(meta$site_code=="RED")
+
+cur.num = 1
+for(i in 1:length(red.idx)){
+       if(i == 1) { 
+              meta$session.num[red.idx[i]] = cur.num
+              meta$session.date[red.idx[i]] = meta$date_start[red.idx[i]]
+       } else {
+              datediff = as.numeric(meta$date_start[red.idx[i]] - meta$date_start[red.idx[i-1]])
+              if(datediff > 14) cur.num = cur.num + 1
+              meta$session.num[red.idx[i]] = cur.num
+              meta$session.date[red.idx[i]] = meta$date_start[which(meta$session.num==cur.num)[1]] 
+       }
+       
+}
+
+
+tow.idx = which(meta$site_code=="TOW")
+
+cur.num = 1
+for(i in 1:length(tow.idx)){
+       if(i == 1) { 
+              meta$session.num[tow.idx[i]] = cur.num
+       } else {
+              datediff = as.numeric(meta$date_start[tow.idx[i]] - meta$date_start[tow.idx[i-1]])
+              if(datediff > 14) cur.num = cur.num + 1
+              meta$session.num[tow.idx[i]] = cur.num
+              meta$session.date[tow.idx[i]] = meta$date_start[which(meta$session.num==cur.num)[1]] 
+       }
+       
+}
+
+meta$session.date[which(meta$session.date == as.Date("2000-01-01"))] = NA
+
+# ==> good for now, but need to manually check whether the session numbers are ok
+
+
+
+sum(vir3$catch.or.ur[grep("TOW",vir3$accession_update)] =="catch")
+sum(vir3$hev[grep("ACTOW",vir3$accession_update)])
+length(grep("ACTOW",vir3$accession_update))
+sum(imm3$hev[grep("ACTOW",imm3$accession)],na.rm=T)
+
+
+
+# create catch dataframe
+
+# add virus data for individuals without immune data
+imm3$accession = as.character(imm3$accession)
+vir3$accession_update = as.character(vir3$accession_update)
+imm3$site = as.character(imm3$site)
+
+idx.not.in.imm = which((!vir3$unique_ID %in% imm3$unique_ID) & vir3$catch.or.ur=="catch")
+imm3[(nrow(imm3)+1):(nrow(imm3)+length(idx.not.in.imm)),c("accession","unique_ID","date","site","ct_cedpv","ct_hev","hev")] = vir3[idx.not.in.imm,c("accession_update","unique_ID","date_start","site","ct_cedpv","ct_hev","hev")]
+
+
+
+# merge catch data with metadata based on accession nr
+colnames(meta)[1] = "accession"
+df.catch = left_join(x = imm3, y = meta[,c("accession","session.num","session.date","session_type")],by = "accession")
+
+
+
+# underroost dataframe
+
+df.ur = vir3 %>%
+       filter(catch.or.ur == "ur")
+
+colnames(df.ur)[1] = "accession"
+df.ur = left_join(x = df.ur, y = meta[,c("accession","session.num","session.date","session_type","site_code")],by = "accession")
+colnames(df.ur)[which(colnames(df.ur)=="date_start")] = "date"
+
+
+
+
+# only keep TOW and RED data
+df.catch = df.catch %>%
+       filter(site %in% c("RED","TOW"))
+
+df.ur = df.ur %>%
+       filter(site %in% c("RED","TOW")) %>%
+       mutate(accession_sheet = paste(accession, sample_id))
+
+
+
+
+
+# add underroost bat counts
+
+b0 = readRDS("australia_underroost_downloaded_20220607.RDS")
+# extract site from accession id (the site column is mostly empty so overwriting)
+b0$site = substr(b0$accession_update,start = 3,stop = 5)
+
+b0$date = as.Date(b0$date)
+
+b0$bff = as.numeric(b0$bff)
+b0$bffm = as.numeric(b0$bffm)
+
+# merge bff and bffm when bffm is missing
+b0$bffm[which(is.na(b0$bffm) & !is.na(b0$bff))] = b0$bff[which(is.na(b0$bffm) & !is.na(b0$bff))]
+
+
+b1 = b0 %>%
+       # mutate(bff_conf.num = as.numeric(bff_conf)) %>%  # change to numeric
+       # filter(bff_conf.num == 1) %>%    # only keep confidence level 1
+       mutate(bffm.count = as.numeric(bffm)) %>%    # change to numeric, so entries like "5+" become NA
+       filter(is.finite(bffm.count))  %>% # only keep non-NA
+       filter(bffm.count < 15 & bffm.count > 0) %>%  # remove counts higher than 15 because that is the maximum of the Ct probability distribution function
+       mutate(accession_sheet = paste(accession_update, sheet_num))
+range(b1$bffm.count)
+hist(b1$bffm.count)
+
+head(df.ur)
+head(b1)
+
+# View(b0[which(b0$accession_num=="ARRED029"),])
+# View(df.ur[which(df.ur$accession=="ARRED029"),])
+
+# View(b0[which(b0$site=="RED"),])
+# sample_id in df.ur corresponds with sheet_num in b0
+
+df.ur = left_join(df.ur, b1[,c("accession_sheet","bffm.count")], by = "accession_sheet")
+
+
+# no bat counts:
+sum(is.na(df.ur$bffm.count))
+# out of:
+nrow(df.ur)
+
+df.ur = df.ur[which(!is.na(df.ur$bffm.count)),]
+
+```
+
+
+# Prevalence time series      
+
+Proportion of PCR positive samples per session, sample type and site.    
+
+
+```{r fig.width = 12, fig.height = 6, out.width = "80%"}
+
+df.catch.plot = df.catch %>%
+       filter(site %in% c("RED","TOW")) %>%
+       group_by(session.date, site) %>%
+       summarize(prev = sum(hev==1, na.rm=T)/n())
+
+df.catch.plot$sample.type = "Catch"
+
+df.ur.plot = df.ur %>%
+       filter(site %in% c("RED","TOW")) %>%
+       group_by(session.date, site) %>%
+       summarize(prev = sum(hev==1, na.rm=T)/n())
+
+df.ur.plot$sample.type = "Underroost"
+
+
+df.plot.combined = rbind(df.catch.plot, df.ur.plot)
+
+
+col.2.groups = brewer.pal(n = 11,"RdYlBu")[c(2,9)]
+
+plot1 = ggplot(data = df.plot.combined, aes(x = session.date, y = prev, color = sample.type)) +
+       geom_point(size = 2) +
+       geom_line(size = 1) +
+       xlab("Session date") +
+       ylab("HeV PCR prevalence") +
+       scale_color_manual(values = brewer.pal(n = 11,"RdYlBu")[c(2,9)], name = "Sample type") +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm")) +
+       facet_wrap(~ site)
+
+plot1
+
+# ggsave(plot = plot1,filename = "PCR prevalence catch and underroost time series RED and TOW.png",width = 12, height = 5, dpi=600)
+```
+
+\vspace{20pt}  
+
+Samples sizes per site, catch.    
+
+```{r fig.width = 10, fig.height = 6, out.width = "80%"}
+df.catch.samp.plot = df.catch %>%
+       filter(site %in% c("RED","TOW")) %>%
+       group_by(session.date, site) %>%
+       summarize(n = n())
+
+plot1 = ggplot(data = df.catch.samp.plot, aes(x = session.date, y = n)) +
+       geom_line(size = 1, color = col.no.groups) +
+       geom_point(size = 2) +
+       xlab("Session date") +
+       ylab("Number of samples") +
+       scale_y_continuous(breaks = seq(0,100,5)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm")) +
+       facet_wrap(~ site)
+
+plot1
+
+# ggsave(plot = plot1,filename = "Sample size catch time series RED and TOW.png",width = 12, height = 5, dpi=600)
+
+```
+
+
+\vspace{20pt}  
+
+Samples sizes per site, underroost    
+
+```{r fig.width = 10, fig.height = 6, out.width = "80%"}
+df.ur.samp.plot = df.ur %>%
+       filter(site %in% c("RED","TOW")) %>%
+       group_by(session.date, site) %>%
+       summarize(n = n())
+
+plot1 = ggplot(data = df.ur.samp.plot, aes(x = session.date, y = n)) +
+       geom_line(size = 1, color = col.no.groups) +
+       geom_point(size = 2) +
+       xlab("Session date") +
+       ylab("Number of samples") +
+       scale_y_continuous(breaks = seq(0,200,10)) +
+       theme_light() +
+       theme(plot.title  =  element_text(size = 11),
+             text = element_text(size = 11),
+             axis.text = element_text(size = 11),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm")) +
+       facet_wrap(~ site)
+
+plot1
+
+# ggsave(plot = plot1,filename = "Sample size underroost time series RED and TOW.png",width = 12, height = 5, dpi=600)
+
+```
+
+# Prepare data for Redcliffe fitting     
+
+
+```{r}
+# prepare catch input data     
+
+# ==> make sure variables are numeric, and rows with NAs are removed
+
+df.catch.model = df.catch %>%
+       mutate(bat_forearm_mm = as.numeric(bat_forearm_mm)) %>%
+       filter(site == "RED" & !is.na(hev) & !is.na(bat_weight_g) & !is.na(bat_forearm_mm))
+```
+
+```{r}
+# smaller dataset to test model
+# df.catch.model = df.catch.model[which(df.catch.model$date > as.Date("2020-02-01")),]
+
+```
+
+```{r}
+# scale continuous variables (necessary for the model, so that the priors work correctly, allowing regularization with normal distributions around mean = 0 for the coefficients)
+df.catch.model$bat_weight_g_scaled = as.numeric(scale(df.catch.model$bat_weight_g))
+df.catch.model$bat_forearm_mm_scaled = as.numeric(scale(df.catch.model$bat_forearm_mm))
+```
+
+
+```{r}
+# prepare ur input data
+
+
+df.ur.model = df.ur %>%
+       filter(site == "RED" & !is.na(hev))
+```
+
+
+```{r}
+# smaller dataset to test model
+# df.ur.model = df.ur.model[which(df.ur.model$date > as.Date("2020-02-01")),]
+
+```
+
+
+```{r}
+# convert dates to numeric days starting on the earliest day in the datasets
+df.catch.model$date.day = as.numeric(df.catch.model$date - min(c(df.ur.model$date, df.catch.model$date))) + 1   # + 1 so the day count starts at 1, necessary for model indexing
+df.ur.model$date.day = as.numeric(df.ur.model$date - min(c(df.ur.model$date, df.catch.model$date))) + 1
+
+
+# View(df.catch.model[,c("session.num","session.num.new")])
+
+# times (dates) for true prevalence
+# all times at which true prevalence will be calculated (and smoothed over)
+# the first line adds times that may not be in the sample data, ensuring a regular sequence for smoothed prevalence
+# the second and third line are the days on which samples were collected
+time.int = sort(unique(round(c(seq(1,max(c(df.ur.model$date.day, df.catch.model$date.day)),by = 30),  # calculate prevalence at least every 'by = X' days
+                  df.catch.model$date.day,
+                  df.ur.model$date.day))))
+
+# the model needs to know how to link true prevalence times to sample times, 
+# so each dataset needs an index vector
+df.catch.model$time.int.idx = sapply(df.catch.model$date.day, function(x) which(time.int==x)[1])
+df.ur.model$time.int.idx = sapply(df.ur.model$date.day, function(x) which(time.int==x)[1])
+
+
+# input data catch:   
+y.catch = df.catch.model$hev
+n.catch = length(y.catch)
+catch.vars.matrix = model.matrix(~ bat_weight_g_scaled + bat_forearm_mm_scaled, data = df.catch.model)[,-1]  # this allow categorical variables, converts them to a form that can be used for model fitting
+day.catch = df.catch.model$time.int.idx
+
+# input data UR sheets:
+y.ur = df.ur.model$ct_hev    # hev data for all sheets
+n.ur = length(y.ur)   # number of sheets
+day.ur = df.ur.model$time.int.idx
+bat.count.ur = df.ur.model$bffm.count
+
+
+# add index for ct_array of model
+ct.index.ur = numeric(length(y.ur))
+ct.index.ur[y.ur==0] = 1
+ct.index.ur[y.ur > 0] = y.ur[y.ur > 0] - 19
+
+
+
+
+```
+
+
+
+
+
+# Load model
+
+
+
+
+```{r}
+#Ct probabilities
+ct.prob.array = readRDS("ct.prob.array.RDS")
+
+
+# stan model
+stan.model.prev.Ct = 
+       "
+       functions {
+              
+              // function to calculate binomial probability density, couldn't find non-log version in stan 
+              real dbin(int npos, int ntotal, real prob){
+                     real probdens;
+                     probdens = choose(ntotal, npos) * prob^npos * (1-prob)^(ntotal-npos);
+                     return(probdens);
+              }
+              
+              // probability mass function (lpmf)
+              real ct_prob_lpmf(int ct, int nbat, real prev, real[] ct_probs){
+                     // first convert prevalence to indexable number of positives in a roundabout way, as stan doesn't accept rounded real values for indexing, and doesn't convert to integers
+                     int npos; // variable to index ct_probs
+                     real lprob; // likelihood    
+                     real ctprob[nbat+1];       // vector for probabilities
+
+                     
+                     // calculate P(Ct | prev, nbat) for each npos
+                     // n = 1 corresponds with npos = 0
+                     for(n in 1:(nbat+1)) {
+                            ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
+                     }
+                     lprob = log(sum(ctprob));   
+
+                     return lprob;
+              }
+              
+       }
+       
+       data {
+              //underroost:
+              int<lower=1> N_ur;      // number of underroost samples
+              int Ct[N_ur];        // Ct of each underroost sample
+              int ct_index[N_ur];        // index of each ct value in ct_array
+              int bat_count[N_ur]; // number of bats above each sheet
+              int Ct_prob_Npos;
+              int Ct_prob_Ntotal;
+              int Ct_prob_Ct;
+              real<lower=0, upper = 1> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
+              int day_idx_ur[N_ur];           // index in time_int corresponding with the sample day
+              
+              // catch:    
+              int<lower=1> N_catch;                           // number of individuals
+              int<lower=1> N_var_catch;                       // number of predictor variables
+              int<lower=0, upper=1> y_catch[N_catch];               // shedding status of each individual
+              int day_idx_catch[N_catch];           // index in time_int corresponding with the sample day
+              matrix[N_catch,N_var_catch] vars_catch;                           // individual covariate
+              
+              // prevalence:
+              int<lower=0> N_times_out;         // number of output times for smoothed prevalence
+              real time_int[N_times_out];             // prev times, must include all unique observation/sample days
+              
+              
+       }
+
+       transformed data {
+              real delta = 1e-9;  // for smoothing function
+              real<lower=0> ct_array_probs[N_ur,Ct_prob_Npos];
+              
+              for(i in 1:N_ur){
+                     ct_array_probs[i] = ct_array[,bat_count[i],ct_index[i]];
+              }
+       }
+       
+       parameters {
+              real<lower=0,upper=1> P_ur[N_ur];     // proportion positive per underroost sample
+              real<lower=0> phi_P_ur;            // variance parameter for P_ur Beta distribution
+              real<lower=0> phi_psi;            // variance parameter for psi_ind Beta distribution
+              vector<lower=0,upper=1>[N_catch] psi_ind;     // probability of testing false negative, individual
+              real<lower=0,upper=1> psi_pop;     // proportion of positives that test negative
+              vector[N_var_catch] betas;                               // regression coefficients
+              real<lower=1> elleq;        // lengthscale. gaussian process parameter for prevalence, values of l less than the shortest time between observations or greater than the total observation time are not identified. inverse gamma prior on l is used to weakly inform the range of plausible values between these lowest and highest values. l controls amplitude, i.e. how wiggly the function can be (smaller = wigglier), i.e. how quickly the correlation between two points drops as their distance increases. lower limit set to 1 because of the daily time resolution.
+              
+              
+              real<lower=0> sigma;        // gaussian process parameter for prevalence, controls oscillation, i.e. how much vertically the function can span
+              vector[N_times_out] eta;    // parameter used to generate a multivariate normal vector (z) that corresponds to the latent gaussian process for prevalence
+              real mu;  // can be used to model session-level correlates (theta ~ beta * x + ..) of prevalence
+              
+       }
+       
+       transformed parameters {
+              vector[N_times_out] Phi_theta_probit;   // multivariate normal vector corresponding to the latent gaussian process of prevalence
+              vector[N_times_out] logit_Phi_theta_probit;   
+              vector[N_catch] logit_Phi_theta_probit_catch;   
+              vector[N_catch] y_catch_bern_mu;
+              vector[N_catch] beta_x_vars_catch;        // stores vectorized product to increase speed
+              
+              {
+                     matrix[N_times_out, N_times_out] L_K;    
+                     matrix[N_times_out, N_times_out] K = cov_exp_quad(time_int, sigma, elleq);
+                     
+                     for(i in 1:N_times_out){
+                            K[i, i] = K[i, i] + delta;
+                     }
+                     
+                     L_K = cholesky_decompose(K);
+                     Phi_theta_probit = Phi(L_K * eta + mu);
+                     logit_Phi_theta_probit = logit(Phi_theta_probit);
+              }
+              
+              // prepare parameters for faster vectorized processing
+              for(i in 1:N_catch){
+                     beta_x_vars_catch[i] = dot_product(betas, vars_catch[i]);
+                     logit_Phi_theta_probit_catch[i] = logit_Phi_theta_probit[day_idx_catch[i]];
+                     y_catch_bern_mu[i] = (1 - psi_ind[i]) * inv_logit(logit_Phi_theta_probit_catch[i] + beta_x_vars_catch[i]);
+              }
+       }
+       
+       model {
+              phi_P_ur ~ gamma(1.2,0.5);       // larger values = lower variance, less heterogeneity in the outcome data
+              phi_psi ~ gamma(1.2,0.5);       // larger values = lower variance, less heterogeneity in the outcome data
+              betas ~ normal(0,1);        // slightly informative regularizing prior for regression coefficients individual shedding
+              psi_pop ~ beta(1,3);  // informative prior, all values possible, but lower values more likely
+              elleq ~ inv_gamma(2.5,150);   // values of l less than the shortest time between observations or greater than the total observation time are not identified.
+              sigma ~ std_normal();   // must be positive, but by defining it as lower=0 this becomes a half-normal, and it samples nicely.
+              eta ~ std_normal();
+              mu ~ std_normal();
+              
+              psi_ind ~ beta_proportion(psi_pop , phi_psi);    // beta distribution defined in terms of mean and precision
+              
+              y_catch ~ bernoulli(y_catch_bern_mu);
+
+              for(j in 1:N_ur) {
+                     Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array_probs[j]);
+              }
+              
+              P_ur ~ beta_proportion(Phi_theta_probit[day_idx_ur] , phi_P_ur);      // beta distribution defined in terms of mean and precision
+       }
+
+       generated quantities {
+              vector<lower=0,upper=1>[N_catch] P_shed;          // probability of shedding for each individual
+              vector<lower=0,upper=1>[N_times_out] theta_smooth;          // prevalence at the smoothed times
+              
+              //for(i in 1:N_catch){
+               //      P_shed[i] = inv_logit(logit_Phi_theta_probit_catch[i] + beta_x_vars_catch[i]);
+              //}
+              
+              P_shed = inv_logit(logit_Phi_theta_probit_catch + beta_x_vars_catch);
+              
+              theta_smooth = Phi_theta_probit[1:N_times_out];
+       }
+       "
+```
+
+
+Current model restrictions/assumptions:    
+- The distribution of Ct values underlying the underroost model is based on Ct values in catch samples for the entire dataset, AVL samples only, maximum volumes only.   
+In the near future I will focus on this, test how important the shape of this Ct distribution is, and if necessary incorporate buffer and volume specific corrections.    
+For now it's fine to ignore this, and while I don't think results will be affected qualitatively, there is a chance that they will be.    
+- Each underroost observation needs a bat count. This bat count is treated as certain in the model. In the future we can expand the model so that the uncertainty in bat count can be included/modeled.    
+- Underroost samples for which the bat count is higher than 15 are removed, because the underlying Ct value probability distribution that is necessary to use Ct values of underroost samples can only handle counts up to 15. We should be able to improve on that in the future, but this will require some additional programming efforts.   
+
+
+
+
+\pagebreak  
+
+# Fit model
+
+```{r}
+
+
+run.model.fit.again = F
+if(run.model.fit.again == T) {
+       model.fit = stan(model_code = stan.model.prev.Ct,
+                        data = list(N_ur = n.ur,
+                                    Ct = y.ur,
+                                    ct_index = ct.index.ur,
+                                    bat_count = bat.count.ur,
+                                    Ct_prob_Npos = dim(ct.prob.array)[1],
+                                    Ct_prob_Ntotal = dim(ct.prob.array)[2],
+                                    Ct_prob_Ct = dim(ct.prob.array)[3],
+                                    ct_array = ct.prob.array,
+                                    day_idx_ur = day.ur,
+                                    N_catch = n.catch,
+                                    N_var_catch = ncol(catch.vars.matrix),
+                                    y_catch = y.catch,
+                                    day_idx_catch = day.catch,
+                                    vars_catch = catch.vars.matrix,
+                                    N_times_out = length(time.int),
+                                    time_int = time.int),
+                        chains = 5,
+                        warmup = 1500,   
+                        iter = 3000,      
+                        cores = 5) 
+       saveRDS(model.fit,"ur_catch_model_data_fit_20220826.RDS")
+} else {
+       
+       model.fit = readRDS("ur_catch_model_data_fit_20220826.RDS")  
+}
+
+sum.fit = as.data.frame(summary(model.fit)$summary)
+
+params = as.data.frame(rstan::extract(model.fit))
+
+fit.posterior = as.array(model.fit)
+```
+
+
+
+
+
+
+Some diagnostics:   
+
+```{r results = 'hide', fig.show='hide'}
+# launch_shinystan(model.fit)
+range(sum.fit$Rhat,na.rm=T)
+rownames(sum.fit)[which(sum.fit$Rhat>1.1)]
+stan_trace(model.fit, pars = c("theta_smooth[1]","theta_smooth[5]","theta_smooth[15]","theta_smooth[20]","theta_smooth[25]"))
+stan_trace(model.fit, pars = "psi_pop")
+stan_trace(model.fit, pars = "sigma")
+stan_plot(model.fit, pars = "sigma", point_est = "median", show_density = T)
+stan_trace(model.fit, pars = "elleq")
+stan_plot(model.fit, pars = "elleq", point_est = "median", show_density = T)
+pairs(model.fit,pars = c("sigma","elleq"))
+stan_trace(model.fit, pars = c("P_shed[1]","P_shed[11]","P_shed[22]","P_shed[33]","P_shed[44]","P_shed[55]"))
+stan_trace(model.fit, pars = c("P_ur[1]","P_ur[11]","P_ur[22]","P_ur[33]","P_ur[44]","P_ur[55]"))
+```
+
+
+# Model output    
+
+
+Observed (points) and estimated/smoothed prevalence:    
+
+(with 95% CrI band)    
+
+```{r fig.height = 6, fig.width = 10, out.width = "80%"}
+prev.true.post = params[,grep("theta_smooth",rownames(sum.fit))]
+
+prev.out = data.frame(median = apply(prev.true.post[(nrow(prev.true.post)-2000):nrow(prev.true.post),], 2, median),
+                      lower =  apply(prev.true.post[(nrow(prev.true.post)-2000):nrow(prev.true.post),], 2, quantile, prob = .025),
+                      upper =  apply(prev.true.post[(nrow(prev.true.post)-2000):nrow(prev.true.post),], 2, quantile, prob = .975), 
+                      x = time.int)
+
+
+df.catch.plot = df.catch.model %>%
+       group_by(date.day, site) %>%
+       summarize(prev = sum(hev==1, na.rm=T)/n(),
+                 n = n())
+
+df.catch.plot$sample.type = "Catch"
+
+df.ur.plot = df.ur.model %>%
+       group_by(date.day, site) %>%
+       summarize(prev = sum(hev==1, na.rm=T)/n(),
+                 n = n())
+
+df.ur.plot$sample.type = "Underroost"
+
+df.plot.combined = as.data.frame(rbind(df.catch.plot, df.ur.plot))
+
+
+# season.cols = data.frame(xstart = as.Date("2018-12-01","2019-06-01","2019-12-01","2020-06-01"),
+#                          xend = as.Date("2019-02-28","2019-08-31","2020-02-28","2020-08-31"),
+#                          col = c("darkred","lightblue","darkred","lightblue"))
+
+ggplot() + 
+       #geom_rect(data = season.cols, aes(ymin=0, ymax = 1, xmin = xstart, xmax = xend, fill = col), alpha = 0.25) +
+       geom_ribbon(data=prev.out, aes(x=x, ymin=lower, ymax=upper), linetype=0, fill=col.no.groups, alpha=0.3) +
+       geom_line(data=prev.out, aes(x=x, y=median), size = 1, color=col.no.groups) +
+       geom_point(data = df.plot.combined, aes(x=date.day, y=prev, fill = sample.type), size = 2.5, shape = 21, color = "black") + 
+       scale_fill_manual(values = brewer.pal(n = 11,"RdYlBu")[c(2,9)], name = "Sample type") +
+       scale_x_continuous(breaks = seq(0,max(c(df.catch.model$date.day,df.ur.model$date.day)),length.out = 12), labels = format( seq(min(c(df.catch.model$date,df.ur.model$date)),max(c(df.catch.model$date,df.ur.model$date)),length.out = 12),"%b\n%Y")) +
+       theme_bw() +
+       ylab("Prevalence") +
+       xlab("Day") +
+       theme.settings
+```
+
+
+\vspace{30pt}   
+
+
+The same figure but with sample sizes indicated as point size:    
+
+```{r fig.height = 6, fig.width = 10, out.width = "80%"}
+ggplot() + 
+       geom_ribbon(data=prev.out, aes(x=x, ymin=lower, ymax=upper), linetype=0, fill=col.no.groups, alpha=0.3) +
+       geom_line(data=prev.out, aes(x=x, y=median), size = 1, color=col.no.groups) +
+       geom_point(data = df.plot.combined, aes(x=date.day, y=prev, color = sample.type, size = n), shape = 1) + 
+       scale_color_manual(values = brewer.pal(n = 11,"RdYlBu")[c(2,9)], name = "Sample type") +
+       scale_size(name = "Sample size",breaks = c(1,5,10,20,55)) +
+       scale_x_continuous(breaks = seq(0,max(c(df.catch.model$date.day,df.ur.model$date.day)),length.out = 12), labels = format( seq(min(c(df.catch.model$date,df.ur.model$date)),max(c(df.catch.model$date,df.ur.model$date)),length.out = 12),"%b\n%Y")) +
+       theme_bw() +
+       ylab("Prevalence") +
+       xlab("Day") +
+       theme.settings
+```
+
+
+
+
+Posterior distributions of false negative rate:   
+(proportion of positives that test negative)    
+
+
+```{r fig.height = 5, fig.width = 7, out.width = "40%"}
+
+plot.df = data.frame(x = params[,"psi_pop"])
+
+
+ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
+  geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+  scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
+       ylab("Posterior density") +
+       xlab("False negative rate") +
+       ggtitle("") +
+       theme_bw() +
+       theme.settings
+
+```
+
+
+
+Posterior distributions of regression model coefficients:   
+
+
+```{r fig.height = 5, fig.width = 10, out.width = "80%"}
+
+plot.df = data.frame(x = params[,"betas.1"])
+
+
+plot1 = ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
+  geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+  scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
+       ylab("Posterior density") +
+       xlab("Effect estimate") +
+       ggtitle("Weight") +
+       theme_bw() +
+       theme.settings
+
+
+plot.df = data.frame(x = params[,"betas.2"])
+
+
+plot2 = ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
+  geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+  scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
+       ylab("Posterior density") +
+       xlab("Effect estimate") +
+       ggtitle("Forearm length") +
+       theme_bw() +
+       theme.settings
+
+plot1 + plot2
+```
+
+
+Predicted probability for all bats to be positive in an underroost sample:    
+
+
+(Showing all positive samples and a random selection of 30 negatives.)    
+
+```{r fig.height = 11, fig.width = 15, out.width = "90%", fig.show='hide'}
+
+mcmc_areas(fit.posterior[,,1:10],
+           prob = 0.8,
+           prob_outer = 0.95)
+
+```
+
+
+
+
+```{r fig.height = 20, fig.width = 10, out.width = "100%"}
+
+prop.post.all = as.data.frame(params[(nrow(params)-4999):nrow(params),grep("P_ur\\[",rownames(sum.fit))]) %>%
+       gather
+
+colnames(prop.post.all) = c("id","pred.post")
+prop.post.all$id = rep(1:length(grep("P_ur\\[",rownames(sum.fit))), each = 5000)
+
+# only calculate/plot distributions for samples with a positive Ct value    
+
+id.pos.idx = which(df.ur.model$ct_hev>0)
+set.seed(111)
+id.neg.random.idx = sample(which(df.ur.model$ct_hev==0),size = 30)
+
+
+prop.post.all = prop.post.all %>%
+       filter(id %in% c(id.pos.idx,id.neg.random.idx))
+
+
+prop.post.all$pred.post = round(prop.post.all$pred.post,2)
+prop.post.all$pred.95 = prop.post.all$pred.post
+prop.post.all$pred.80 = prop.post.all$pred.post
+prop.post.all$pred.50 = prop.post.all$pred.post
+
+
+
+
+
+for(i in 1:length(unique(prop.post.all$id))){
+       pred.sorted = sort(prop.post.all$pred.post[which(prop.post.all$id==unique(prop.post.all$id)[i])])
+       
+       pred.50ci.low = pred.sorted[floor(0.25 * length(pred.sorted))]
+       pred.50ci.hi = pred.sorted[floor(0.75 * length(pred.sorted))]
+       prop.post.all$pred.50[which(prop.post.all$id==unique(prop.post.all$id)[i] & (prop.post.all$pred.post < pred.50ci.low | prop.post.all$pred.post > pred.50ci.hi))] = NA
+       
+       pred.80ci.low = pred.sorted[floor(0.1 * length(pred.sorted))]
+       pred.80ci.hi = pred.sorted[floor(0.9 * length(pred.sorted))]
+       prop.post.all$pred.80[which(prop.post.all$id==unique(prop.post.all$id)[i] & (prop.post.all$pred.post < pred.80ci.low | prop.post.all$pred.post > pred.80ci.hi))] = NA
+       
+       pred.95ci.low = pred.sorted[floor(0.025 * length(pred.sorted))]
+       pred.95ci.hi = pred.sorted[floor(0.975 * length(pred.sorted))]
+       prop.post.all$pred.95[which(prop.post.all$id==unique(prop.post.all$id)[i] & (prop.post.all$pred.post < pred.95ci.low | prop.post.all$pred.post > pred.95ci.hi))] = NA
+}
+
+
+id.order.by.ct = order(y.ur[id.pos.idx])
+
+
+plot1 = ggplot() +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.post,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[10],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.95,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[2],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.80,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[4],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.50,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[5],alpha=0.8, scale = 0.85) +
+       coord_flip() +
+       ylab("Bat count\nCt") +
+       xlab("Probability all positive") +
+       scale_y_discrete(labels = paste0(bat.count.ur[id.pos.idx[id.order.by.ct[1:35]]],"\n",y.ur[id.pos.idx[id.order.by.ct[1:35]]])) +
+       scale_x_continuous(limits = c(0,1)) +
+       #ggtitle("1/4") +
+       theme_bw() +
+       theme.settings
+
+
+plot2 = ggplot() +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.post,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[10],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.95,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[2],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.80,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[4],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.50,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[5],alpha=0.8, scale = 0.85) +
+       coord_flip() +
+       ylab("Bat count\nCt") +
+       xlab("Probability all positive") +
+       scale_y_discrete(labels = paste0(bat.count.ur[id.pos.idx[id.order.by.ct[36:69]]],"\n",y.ur[id.pos.idx[id.order.by.ct[36:69]]])) +
+       scale_x_continuous(limits = c(0,1)) +
+       #ggtitle("1/4") +
+       theme_bw() +
+       theme.settings
+
+
+plot3 = ggplot() +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.post,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[10],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.95,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[2],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.80,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[4],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.50,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[5],alpha=0.8, scale = 0.85) +
+       coord_flip() +
+       ylab("Bat count\nCt") +
+       xlab("Probability all positive") +
+       scale_y_discrete(labels = paste0(bat.count.ur[id.neg.random.idx],"\n",y.ur[id.neg.random.idx])) +
+       scale_x_continuous(limits = c(0,1)) +
+       #ggtitle("1/4") +
+       theme_bw() +
+       theme.settings
+
+
+
+
+plot1 /
+       plot2 /
+       plot3
+
+
+```
+
+
+
+```{r}
+# underroost posterior estimates probability all positive
+
+ur.posbat = data.frame(acc = df.ur.model$accession,
+                       date = df.ur.model$date,
+                       id = df.ur.model$sample_id,
+                       bat.count = bat.count.ur,
+                       ct = y.ur,
+                       P.all.pos = round(sum.fit$`50%`[grep("P_ur\\[",rownames(sum.fit))],2))
+
+# View(ur.posbat)
+
+```
+
+
+
+```{r}
+# individual probability of shedding
+
+catch.post = data.frame(acc = df.catch.model$accession,
+                        date = df.catch.model$date,
+                        id = df.catch.model$bat_id,
+                        hev = df.catch.model$hev,
+                        ct = df.catch.model$ct_hev,
+                        P.shedding = round(sum.fit$`50%`[grep("P_shed\\[",rownames(sum.fit))],2),
+                        psi = round(sum.fit$`50%`[grep("psi_ind\\[",rownames(sum.fit))],2))
+
+# View(catch.post)
+
+```
+
+
+
+
+
+
+
+# Prepare data for Towoomba fitting     
+
+
+```{r}
+# prepare catch input data     
+
+# ==> make sure variables are numeric, and rows with NAs are removed
+
+df.catch.model = df.catch %>%
+       mutate(bat_forearm_mm = as.numeric(bat_forearm_mm)) %>%
+       filter(site == "TOW" & !is.na(hev) & !is.na(bat_weight_g) & !is.na(bat_forearm_mm))
+```
+
+```{r}
+# smaller dataset to test model
+# df.catch.model = df.catch.model[which(df.catch.model$date > as.Date("2020-02-01")),]
+
+```
+
+```{r}
+# scale continuous variables (necessary for the model, so that the priors work correctly, allowing regularization with normal distributions around mean = 0 for the coefficients)
+df.catch.model$bat_weight_g_scaled = as.numeric(scale(df.catch.model$bat_weight_g))
+df.catch.model$bat_forearm_mm_scaled = as.numeric(scale(df.catch.model$bat_forearm_mm))
+```
+
+
+```{r}
+# prepare ur input data
+
+
+df.ur.model = df.ur %>%
+       filter(site == "TOW" & !is.na(hev))
+```
+
+
+```{r}
+# smaller dataset to test model
+# df.ur.model = df.ur.model[which(df.ur.model$date > as.Date("2020-02-01")),]
+
+```
+
+
+```{r}
+# convert dates to numeric days starting on the earliest day in the datasets
+df.catch.model$date.day = as.numeric(df.catch.model$date - min(c(df.ur.model$date, df.catch.model$date))) + 1   # + 1 so the day count starts at 1, necessary for model indexing
+df.ur.model$date.day = as.numeric(df.ur.model$date - min(c(df.ur.model$date, df.catch.model$date))) + 1
+
+
+# View(df.catch.model[,c("session.num","session.num.new")])
+
+# times (dates) for true prevalence
+# all times at which true prevalence will be calculated (and smoothed over)
+# the first line adds times that may not be in the sample data, ensuring a regular sequence for smoothed prevalence
+# the second and third line are the days on which samples were collected
+time.int = sort(unique(round(c(seq(1,max(c(df.ur.model$date.day, df.catch.model$date.day)),by = 30),  # calculate prevalence at least every 'by = X' days
+                  df.catch.model$date.day,
+                  df.ur.model$date.day))))
+
+# the model needs to know how to link true prevalence times to sample times, 
+# so each dataset needs an index vector
+df.catch.model$time.int.idx = sapply(df.catch.model$date.day, function(x) which(time.int==x)[1])
+df.ur.model$time.int.idx = sapply(df.ur.model$date.day, function(x) which(time.int==x)[1])
+
+
+# input data catch:   
+y.catch = df.catch.model$hev
+n.catch = length(y.catch)
+catch.vars.matrix = model.matrix(~ bat_weight_g_scaled + bat_forearm_mm_scaled, data = df.catch.model)[,-1]  # this allow categorical variables, converts them to a form that can be used for model fitting
+day.catch = df.catch.model$time.int.idx
+
+# input data UR sheets:
+y.ur = df.ur.model$ct_hev    # hev data for all sheets
+n.ur = length(y.ur)   # number of sheets
+day.ur = df.ur.model$time.int.idx
+bat.count.ur = df.ur.model$bffm.count
+
+
+# add index for ct_array of model
+ct.index.ur = numeric(length(y.ur))
+ct.index.ur[y.ur==0] = 1
+ct.index.ur[y.ur > 0] = y.ur[y.ur > 0] - 19
+
+
+
+
+```
+
+
+
+
+
+
+
+# Fit model
+
+```{r}
+
+
+run.model.fit.again = F
+if(run.model.fit.again == T) {
+       model.fit = stan(model_code = stan.model.prev.Ct,
+                        data = list(N_ur = n.ur,
+                                    Ct = y.ur,
+                                    ct_index = ct.index.ur,
+                                    bat_count = bat.count.ur,
+                                    Ct_prob_Npos = dim(ct.prob.array)[1],
+                                    Ct_prob_Ntotal = dim(ct.prob.array)[2],
+                                    Ct_prob_Ct = dim(ct.prob.array)[3],
+                                    ct_array = ct.prob.array,
+                                    day_idx_ur = day.ur,
+                                    N_catch = n.catch,
+                                    N_var_catch = ncol(catch.vars.matrix),
+                                    y_catch = y.catch,
+                                    day_idx_catch = day.catch,
+                                    vars_catch = catch.vars.matrix,
+                                    N_times_out = length(time.int),
+                                    time_int = time.int),
+                        chains = 5,
+                        warmup = 5000,   
+                        iter = 10000,      
+                        cores = 5) 
+       saveRDS(model.fit,"ur_catch_model_data_fit_20220829.RDS")
+} else {
+       
+       model.fit = readRDS("ur_catch_model_data_fit_20220829.RDS")  
+}
+
+sum.fit = as.data.frame(summary(model.fit)$summary)
+
+params = as.data.frame(rstan::extract(model.fit))
+
+fit.posterior = as.array(model.fit)
+```
+
+
+
+
+
+
+Some diagnostics:   
+
+```{r results = 'hide', fig.show='hide'}
+# launch_shinystan(model.fit)
+range(sum.fit$Rhat,na.rm=T)
+rownames(sum.fit)[which(sum.fit$Rhat>1.1)]
+stan_trace(model.fit, pars = c("theta_smooth[1]","theta_smooth[5]","theta_smooth[15]","theta_smooth[20]","theta_smooth[25]"))
+stan_trace(model.fit, pars = "psi_pop")
+stan_trace(model.fit, pars = "sigma")
+stan_plot(model.fit, pars = "sigma", point_est = "median", show_density = T)
+stan_trace(model.fit, pars = "elleq")
+stan_plot(model.fit, pars = "elleq", point_est = "median", show_density = T)
+pairs(model.fit,pars = c("sigma","elleq"))
+stan_trace(model.fit, pars = c("P_shed[1]","P_shed[11]","P_shed[22]","P_shed[33]","P_shed[44]","P_shed[55]"))
+stan_trace(model.fit, pars = c("P_ur[1]","P_ur[11]","P_ur[22]","P_ur[33]","P_ur[44]","P_ur[55]"))
+```
+
+
+# Model output    
+
+
+Observed (points) and estimated/smoothed prevalence:    
+
+(with 95% CrI band)    
+
+```{r fig.height = 6, fig.width = 10, out.width = "80%"}
+prev.true.post = params[,grep("theta_smooth",rownames(sum.fit))]
+
+prev.out = data.frame(median = apply(prev.true.post[(nrow(prev.true.post)-2000):nrow(prev.true.post),], 2, median),
+                      lower =  apply(prev.true.post[(nrow(prev.true.post)-2000):nrow(prev.true.post),], 2, quantile, prob = .025),
+                      upper =  apply(prev.true.post[(nrow(prev.true.post)-2000):nrow(prev.true.post),], 2, quantile, prob = .975), 
+                      x = time.int)
+
+
+df.catch.plot = df.catch.model %>%
+       group_by(date.day, site) %>%
+       summarize(prev = sum(hev==1, na.rm=T)/n(),
+                 n = n())
+
+df.catch.plot$sample.type = "Catch"
+
+df.ur.plot = df.ur.model %>%
+       group_by(date.day, site) %>%
+       summarize(prev = sum(hev==1, na.rm=T)/n(),
+                 n = n())
+
+df.ur.plot$sample.type = "Underroost"
+
+df.plot.combined = as.data.frame(rbind(df.catch.plot, df.ur.plot))
+
+
+# season.cols = data.frame(xstart = as.Date("2018-12-01","2019-06-01","2019-12-01","2020-06-01"),
+#                          xend = as.Date("2019-02-28","2019-08-31","2020-02-28","2020-08-31"),
+#                          col = c("darkred","lightblue","darkred","lightblue"))
+
+ggplot() + 
+       #geom_rect(data = season.cols, aes(ymin=0, ymax = 1, xmin = xstart, xmax = xend, fill = col), alpha = 0.25) +
+       geom_ribbon(data=prev.out, aes(x=x, ymin=lower, ymax=upper), linetype=0, fill=col.no.groups, alpha=0.3) +
+       geom_line(data=prev.out, aes(x=x, y=median), size = 1, color=col.no.groups) +
+       geom_point(data = df.plot.combined, aes(x=date.day, y=prev, fill = sample.type), size = 2.5, shape = 21, color = "black") + 
+       scale_fill_manual(values = brewer.pal(n = 11,"RdYlBu")[c(2,9)], name = "Sample type") +
+       scale_x_continuous(breaks = seq(0,max(c(df.catch.model$date.day,df.ur.model$date.day)),length.out = 12), labels = format( seq(min(c(df.catch.model$date,df.ur.model$date)),max(c(df.catch.model$date,df.ur.model$date)),length.out = 12),"%b\n%Y")) +
+       theme_bw() +
+       ylab("Prevalence") +
+       xlab("Day") +
+       theme.settings
+```
+
+
+\vspace{30pt}   
+
+
+The same figure but with sample sizes indicated as point size:    
+
+```{r fig.height = 6, fig.width = 10, out.width = "80%"}
+ggplot() + 
+       geom_ribbon(data=prev.out, aes(x=x, ymin=lower, ymax=upper), linetype=0, fill=col.no.groups, alpha=0.3) +
+       geom_line(data=prev.out, aes(x=x, y=median), size = 1, color=col.no.groups) +
+       geom_point(data = df.plot.combined, aes(x=date.day, y=prev, color = sample.type, size = n), shape = 1) + 
+       scale_color_manual(values = brewer.pal(n = 11,"RdYlBu")[c(2,9)], name = "Sample type") +
+       scale_size(name = "Sample size",breaks = c(1,5,10,20,55)) +
+       scale_x_continuous(breaks = seq(0,max(c(df.catch.model$date.day,df.ur.model$date.day)),length.out = 12), labels = format( seq(min(c(df.catch.model$date,df.ur.model$date)),max(c(df.catch.model$date,df.ur.model$date)),length.out = 12),"%b\n%Y")) +
+       theme_bw() +
+       ylab("Prevalence") +
+       xlab("Day") +
+       theme.settings
+```
+
+
+
+
+Posterior distributions of false negative rate:   
+(proportion of positives that test negative)    
+
+
+```{r fig.height = 5, fig.width = 7, out.width = "40%"}
+
+plot.df = data.frame(x = params[,"psi_pop"])
+
+
+ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
+  geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+  scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
+       ylab("Posterior density") +
+       xlab("False negative rate") +
+       ggtitle("") +
+       theme_bw() +
+       theme.settings
+
+```
+
+
+
+Posterior distributions of regression model coefficients:   
+
+
+```{r fig.height = 5, fig.width = 10, out.width = "80%"}
+
+plot.df = data.frame(x = params[,"betas.1"])
+
+
+plot1 = ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
+  geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+  scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
+       ylab("Posterior density") +
+       xlab("Effect estimate") +
+       ggtitle("Weight") +
+       theme_bw() +
+       theme.settings
+
+
+plot.df = data.frame(x = params[,"betas.2"])
+
+
+plot2 = ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
+  geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+  scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
+       ylab("Posterior density") +
+       xlab("Effect estimate") +
+       ggtitle("Forearm length") +
+       theme_bw() +
+       theme.settings
+
+plot1 + plot2
+```
+
+
+Predicted probability for all bats to be positive in an underroost sample:    
+
+
+(Showing all positive samples and a random selection of 30 negatives.)    
+
+```{r fig.height = 11, fig.width = 15, out.width = "90%", fig.show='hide'}
+
+mcmc_areas(fit.posterior[,,1:10],
+           prob = 0.8,
+           prob_outer = 0.95)
+
+```
+
+
+
+
+```{r fig.height = 20, fig.width = 10, out.width = "100%"}
+
+prop.post.all = as.data.frame(params[(nrow(params)-4999):nrow(params),grep("P_ur\\[",rownames(sum.fit))]) %>%
+       gather
+
+colnames(prop.post.all) = c("id","pred.post")
+prop.post.all$id = rep(1:length(grep("P_ur\\[",rownames(sum.fit))), each = 5000)
+
+# only calculate/plot distributions for samples with a positive Ct value    
+
+id.pos.idx = which(df.ur.model$ct_hev>0)
+set.seed(111)
+id.neg.random.idx = sample(which(df.ur.model$ct_hev==0),size = 30)
+
+
+prop.post.all = prop.post.all %>%
+       filter(id %in% c(id.pos.idx,id.neg.random.idx))
+
+
+prop.post.all$pred.post = round(prop.post.all$pred.post,2)
+prop.post.all$pred.95 = prop.post.all$pred.post
+prop.post.all$pred.80 = prop.post.all$pred.post
+prop.post.all$pred.50 = prop.post.all$pred.post
+
+
+
+
+
+for(i in 1:length(unique(prop.post.all$id))){
+       pred.sorted = sort(prop.post.all$pred.post[which(prop.post.all$id==unique(prop.post.all$id)[i])])
+       
+       pred.50ci.low = pred.sorted[floor(0.25 * length(pred.sorted))]
+       pred.50ci.hi = pred.sorted[floor(0.75 * length(pred.sorted))]
+       prop.post.all$pred.50[which(prop.post.all$id==unique(prop.post.all$id)[i] & (prop.post.all$pred.post < pred.50ci.low | prop.post.all$pred.post > pred.50ci.hi))] = NA
+       
+       pred.80ci.low = pred.sorted[floor(0.1 * length(pred.sorted))]
+       pred.80ci.hi = pred.sorted[floor(0.9 * length(pred.sorted))]
+       prop.post.all$pred.80[which(prop.post.all$id==unique(prop.post.all$id)[i] & (prop.post.all$pred.post < pred.80ci.low | prop.post.all$pred.post > pred.80ci.hi))] = NA
+       
+       pred.95ci.low = pred.sorted[floor(0.025 * length(pred.sorted))]
+       pred.95ci.hi = pred.sorted[floor(0.975 * length(pred.sorted))]
+       prop.post.all$pred.95[which(prop.post.all$id==unique(prop.post.all$id)[i] & (prop.post.all$pred.post < pred.95ci.low | prop.post.all$pred.post > pred.95ci.hi))] = NA
+}
+
+
+id.order.by.ct = order(y.ur[id.pos.idx])
+
+
+plot1 = ggplot() +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.post,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[10],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.95,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[2],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.80,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[4],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[1:35]]),],aes(x = pred.50,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[5],alpha=0.8, scale = 0.85) +
+       coord_flip() +
+       ylab("Bat count\nCt") +
+       xlab("Probability all positive") +
+       scale_y_discrete(labels = paste0(bat.count.ur[id.pos.idx[id.order.by.ct[1:35]]],"\n",y.ur[id.pos.idx[id.order.by.ct[1:35]]])) +
+       scale_x_continuous(limits = c(0,1)) +
+       #ggtitle("1/4") +
+       theme_bw() +
+       theme.settings
+
+
+plot2 = ggplot() +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.post,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[10],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.95,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[2],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.80,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[4],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.pos.idx[id.order.by.ct[36:69]]),],aes(x = pred.50,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[5],alpha=0.8, scale = 0.85) +
+       coord_flip() +
+       ylab("Bat count\nCt") +
+       xlab("Probability all positive") +
+       scale_y_discrete(labels = paste0(bat.count.ur[id.pos.idx[id.order.by.ct[36:69]]],"\n",y.ur[id.pos.idx[id.order.by.ct[36:69]]])) +
+       scale_x_continuous(limits = c(0,1)) +
+       #ggtitle("1/4") +
+       theme_bw() +
+       theme.settings
+
+
+plot3 = ggplot() +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.post,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[10],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.95,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[2],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.80,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[4],alpha=0.8, scale = 0.85) +
+       geom_density_ridges(data = prop.post.all[which(prop.post.all$id %in% id.neg.random.idx),],aes(x = pred.50,y = factor(id),height=..scaled..), stat = "density",size=0.2,trim=T,fill = brewer.pal(11,"Spectral")[5],alpha=0.8, scale = 0.85) +
+       coord_flip() +
+       ylab("Bat count\nCt") +
+       xlab("Probability all positive") +
+       scale_y_discrete(labels = paste0(bat.count.ur[id.neg.random.idx],"\n",y.ur[id.neg.random.idx])) +
+       scale_x_continuous(limits = c(0,1)) +
+       #ggtitle("1/4") +
+       theme_bw() +
+       theme.settings
+
+
+
+
+plot1 /
+       plot2 /
+       plot3
+
+
+```
+
+
+
+```{r}
+# underroost posterior estimates probability all positive
+
+ur.posbat = data.frame(acc = df.ur.model$accession,
+                       date = df.ur.model$date,
+                       id = df.ur.model$sample_id,
+                       bat.count = bat.count.ur,
+                       ct = y.ur,
+                       P.all.pos = round(sum.fit$`50%`[grep("P_ur\\[",rownames(sum.fit))],2))
+
+# View(ur.posbat)
+
+```
+
+
+
+```{r}
+# individual probability of shedding
+
+catch.post = data.frame(acc = df.catch.model$accession,
+                        date = df.catch.model$date,
+                        id = df.catch.model$bat_id,
+                        hev = df.catch.model$hev,
+                        ct = df.catch.model$ct_hev,
+                        P.shedding = round(sum.fit$`50%`[grep("P_shed\\[",rownames(sum.fit))],2),
+                        psi = round(sum.fit$`50%`[grep("psi_ind\\[",rownames(sum.fit))],2))
+
+# View(catch.post)
+
+```
+
+
+
+
+
