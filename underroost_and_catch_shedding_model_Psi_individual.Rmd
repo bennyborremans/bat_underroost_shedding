@@ -22,6 +22,7 @@ library(patchwork) # combine plots
 library(RColorBrewer) # use color palette brewer
 library(lubridate)   # date manipulations
 library(MASS) # fit distributions 
+library(Rcpp)
 library(brms)   # bayesian regression models with stan, through brms   
 library(rstan)   # bayesian regression models with stan, through rstan
 library(RcppAlgos) # for comboGeneral function
@@ -38,6 +39,7 @@ col.6.groups = brewer.pal(n = 11,"RdYlBu")[c(1,3,5,7,9,11)]
 
 # add functions
 logit.fun = function(x) log(x/(1-x))
+inv.logit.fun = function(x) exp(x)/(1+exp(x))
 
 # theme settings
 theme.settings = theme(plot.title  =  element_text(size = 14),
@@ -45,6 +47,10 @@ theme.settings = theme(plot.title  =  element_text(size = 14),
                        axis.text = element_text(size = 14),
                        axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 10)),
                        plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+
+
 
 ```
 
@@ -108,7 +114,7 @@ ct.pooled.fun = function(ct) {
        return(pooled.ct)
 }
 
-ct.fit.prob = readRDS("ct.fit.prob.RDS")
+ct.fit.prob = readRDS("ct.fit.prob.39cutoff.RDS")
 
 ur.sim.fun = function(prev, n){
        
@@ -267,7 +273,10 @@ ggplot(data = catch.prev, aes(x = catch.times, y = catch.shed.false.neg)) +
        ggtitle("Simulated catch shedding status\n(jittered around 0 and 1), incl false negatives") +
        theme_bw() +
        theme.settings
+
 ```
+
+
 
 
 \vspace{20pt}
@@ -279,11 +288,14 @@ Add individual variables that correlate with shedding status, either strongly:
 ```{r fig.height = 4, fig.width = 5, out.width = "50%"}
 # add variables to test regression model
 # strong correlation
-beta.var1 = 2
 catch.prev$var1 = numeric(nrow(catch.prev))
 set.seed(333)
-catch.prev$var1[catch.prev$catch.shed==1] = logit.fun(1-0.00001) / rnorm(sum(catch.prev$catch.shed==1),beta.var1,0.5)
-catch.prev$var1[catch.prev$catch.shed==0] = logit.fun(0.00001) / rnorm(sum(catch.prev$catch.shed==0),beta.var1,0.5)
+# catch.prev$var1[catch.prev$catch.shed==1] = logit.fun(1-0.00001) / rnorm(sum(catch.prev$catch.shed==1),beta.var1,0.5)
+# catch.prev$var1[catch.prev$catch.shed==0] = logit.fun(0.00001) / rnorm(sum(catch.prev$catch.shed==0),beta.var1,0.5)
+catch.prev$var1[catch.prev$catch.shed==1] = rnorm(sum(catch.prev$catch.shed==1),2.5,0.5)
+catch.prev$var1[catch.prev$catch.shed==0] = rnorm(sum(catch.prev$catch.shed==0),1,0.5)
+
+beta.var1 = as.numeric(glm(catch.shed ~ as.numeric(scale(var1)), data = catch.prev, family = binomial)$coefficients[2])
 
 ggplot(data = catch.prev, aes(x = catch.shed, y = var1)) +
        geom_jitter(height = 0, width = 0.2, shape = 21, size = 2, color = col.no.groups) +
@@ -305,11 +317,14 @@ Weakly:
 
 ```{r fig.height = 4, fig.width = 5, out.width = "50%"}
 # weak correlation
-beta.var2 = 0.4
+
 catch.prev$var2 = numeric(nrow(catch.prev))
 set.seed(4444)
-catch.prev$var2[catch.prev$catch.shed==1] = rnorm(sum(catch.prev$catch.shed==1),beta.var2,0.5)
-catch.prev$var2[catch.prev$catch.shed==0] = rnorm(sum(catch.prev$catch.shed==0),-beta.var2,0.5)
+catch.prev$var2[catch.prev$catch.shed==1] = rnorm(sum(catch.prev$catch.shed==1),1,1)
+catch.prev$var2[catch.prev$catch.shed==0] = rnorm(sum(catch.prev$catch.shed==0),0,1)
+
+beta.var2 = as.numeric(glm(catch.shed ~ as.numeric(scale(var2)), data = catch.prev, family = binomial)$coefficients[2])
+
 ggplot(data = catch.prev, aes(x = catch.shed, y = var2)) +
        geom_jitter(height = 0, width = 0.2, shape = 21, size = 2, color = col.no.groups) +
        scale_x_continuous(breaks = c(0,1)) +
@@ -330,6 +345,10 @@ Or not at all:
 # random variable
 set.seed(111)
 catch.prev$var3 = rnorm(nrow(catch.prev),0,1)
+
+beta.var3 = as.numeric(glm(catch.shed ~ as.numeric(scale(var3)), data = catch.prev, family = binomial)$coefficients[2])
+
+
 ggplot(data = catch.prev, aes(x = catch.shed, y = var3)) +
        geom_jitter(height = 0, width = 0.2, shape = 21, size = 2, color = col.no.groups) +
        scale_x_continuous(breaks = c(0,1)) +
@@ -350,10 +369,13 @@ Categorical variable:
 ```{r fig.height = 4, fig.width = 5, out.width = "50%"}
 # categorical variable, medium correlation
 catch.prev$var4 = character(nrow(catch.prev))
-beta.var4 = c(0.3,-0.3)
 set.seed(123)
-catch.prev$var4[catch.prev$catch.shed==1] = sample(c("A","B","C"), sum(catch.prev$catch.shed==1),replace = T, prob = c(1 + beta.var4[1], 1, 1 + beta.var4[2] ))
-catch.prev$var4[catch.prev$catch.shed==0] = sample(c("A","B","C"), sum(catch.prev$catch.shed==0),replace = T, prob = c(1 - beta.var4[1], 1, 1 - beta.var4[2]))
+catch.prev$var4[catch.prev$catch.shed==1] = sample(c("A","B","C"), sum(catch.prev$catch.shed==1),replace = T, prob = c(1 + 0.3, 1, 1 - 0.3))
+catch.prev$var4[catch.prev$catch.shed==0] = sample(c("A","B","C"), sum(catch.prev$catch.shed==0),replace = T, prob = c(1 - 0.3, 1, 1 + 0.3))
+
+
+beta.var4 = as.numeric(glm(catch.shed ~ var4, data = catch.prev, family = binomial)$coefficients[c(2,3)])
+
 
 ggplot(data = catch.prev, aes(x = catch.shed, y = var4)) +
        geom_jitter(height = 0.2, width = 0.2, shape = 21, size = 2, color = col.no.groups) +
@@ -429,7 +451,117 @@ ggplot(data = underroost.prev, aes(x = underroost.times, y = posneg)) +
 ```
 
 
+#### Figure for publication   
 
+```{r fig.height = 5, fig.width = 12}
+
+# figure for publication   
+
+
+
+set.seed(111)
+plot1 = ggplot(data = catch.prev, aes(x = catch.times, y = catch.shed.false.neg)) +
+       geom_line(data = sim.prev, aes(x = x, y = y.spline), size = 2, color = "grey30") +
+       geom_jitter(data = catch.prev[catch.prev$catch.shed.false.neg==0 & catch.prev$catch.shed.false.neg.indicator==0,], color = brewer.pal(n = 11,"RdYlBu")[11], height = 0.075, width = 5, alpha = 1, shape = 21, size = 1.75) +
+       geom_jitter(data = catch.prev[catch.prev$catch.shed.false.neg==0 & catch.prev$catch.shed.false.neg.indicator==1,], color = brewer.pal(n = 11,"RdYlBu")[1],fill = brewer.pal(n = 11,"RdYlBu")[1], height = 0.075, width = 5, alpha = 1, shape = 25, size = 2) +
+       geom_jitter(data = catch.prev[catch.prev$catch.shed.false.neg==1,], color = brewer.pal(n = 11,"RdYlBu")[1], height = 0.075, width = 5, alpha = 1, shape = 21, size = 1.75) +
+       scale_y_continuous(breaks = seq(0,1,0.1)) +
+       scale_color_manual(values = col.2.groups[c(2,1)], name = "False\nnegative", labels = c("No","Yes")) +
+       scale_fill_manual(values = c("white",col.2.groups[1]), name = "False\nnegative", labels = c("No","Yes")) +
+       #scale_y_continuous(limits = c(0,1)) +
+       ylab("Prevalence") +
+       xlab("Time") +
+       #ggtitle("Simulated individual sample infection status") +
+       theme_bw() +
+       theme(plot.title  =  element_text(size = 14),
+             text = element_text(size = 18),
+             axis.text = element_text(size = 18),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 5)),
+             axis.title = element_text(size = 22),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+
+
+set.seed(111)
+plot2 = ggplot(data = underroost.prev, aes(x = underroost.times, y = posneg)) +
+       geom_line(data = sim.prev, aes(x = x, y = y.spline), size = 2, color = "grey30") +
+       geom_jitter(data = underroost.prev[underroost.prev$pooled.ct==0,], color = brewer.pal(n = 11,"RdYlBu")[11], height = 0.075, width = 5, alpha = 1, shape = 21, fill = "white", size = 1.75) +
+       geom_jitter(data = underroost.prev[underroost.prev$pooled.ct>0,], aes(color = pooled.ct), height = 0.075, width = 5, alpha = 1, shape = 21, fill = "white", size = 1.75) +
+       scale_color_gradientn(colors = rev(brewer.pal(n = 11,"RdYlBu"))[7:11], name = "Ct") +
+       scale_y_continuous(breaks = seq(0,1,0.1)) +
+       ylab("Prevalence") +
+       xlab("Time") +
+       #ggtitle("Simulated pooled sample Ct values") +
+       theme_bw() +
+       theme(plot.title  =  element_text(size = 14),
+             text = element_text(size = 18),
+             axis.text = element_text(size = 18),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 5)),
+             axis.title = element_text(size = 22),
+             plot.margin = unit(c(0.5,0.75,0.5,0.5),"cm"))
+
+set.seed(111)
+plot3 = ggplot(data = catch.prev, aes(x = catch.shed, y = var1, color = factor(catch.shed))) +
+       geom_jitter(height = 0, width = 0.2, shape = 21, size = 1.75) +
+       scale_color_manual(values = brewer.pal(n = 11,"RdYlBu")[c(11,1)], guide = "none") +
+       scale_x_continuous(breaks = c(0,1), label = c("Neg","Pos")) +
+       scale_y_continuous(breaks = (-1):4, limits = c(-1,3.5)) +
+       ylab("Value") +
+       xlab("") +
+       #ggtitle("Simulated covariates") +
+       theme_bw() +
+       theme(plot.title  =  element_text(size = 14),
+             text = element_text(size = 18),
+             axis.text = element_text(size = 18),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 5)),
+             axis.title = element_text(size = 22),
+             plot.margin = unit(c(0,0,0,0),"cm"))
+
+set.seed(111)
+plot4 = ggplot(data = catch.prev, aes(x = catch.shed, y = var2, color = factor(catch.shed))) +
+       geom_jitter(height = 0, width = 0.2, shape = 21, size = 1.75) +
+       scale_color_manual(values = brewer.pal(n = 11,"RdYlBu")[c(11,1)], guide = "none") +
+       scale_x_continuous(breaks = c(0,1), label = c("Neg","Pos")) +
+       scale_y_continuous(breaks = (-3):5, limits = c(-3,4.6)) +
+       ylab("Value") +
+       xlab("") +
+       theme_bw() +
+       theme(plot.title  =  element_text(size = 14),
+             text = element_text(size = 18),
+             axis.text = element_text(size = 18),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 5)),
+             axis.title = element_text(size = 22),
+             plot.margin = unit(c(-0.5,0,-0.5,0),"cm"))
+
+set.seed(111)
+plot5 = ggplot(data = catch.prev, aes(x = catch.shed, y = var3, color = factor(catch.shed))) +
+       geom_jitter(height = 0, width = 0.2, shape = 21, size = 1.75) +
+       scale_color_manual(values = brewer.pal(n = 11,"RdYlBu")[c(11,1)], guide = "none") +
+       scale_x_continuous(breaks = c(0,1), label = c("Neg","Pos")) +
+       scale_y_continuous(breaks = (-4):4, limits = c(-3.7,3.5)) +
+       ylab("Value") +
+       xlab("Status") +
+       theme_bw() +
+       theme(plot.title  =  element_text(size = 14),
+             text = element_text(size = 18),
+             axis.text = element_text(size = 18),
+             axis.title.y  =  element_text(margin  =  ggplot2::margin(r = 5)),
+             axis.title = element_text(size = 22),
+             plot.margin = unit(c(-0.5,0,0,0),"cm"))
+
+
+
+
+plot.all = (plot1 + (plot3 / plot4 / plot5) + plot2) +
+       plot_layout(widths = c(3,1,3)) +
+       plot_annotation(tag_levels = list(c('A', 'B','','','C')))
+
+
+plot.all   
+
+
+# ggsave(plot = plot.all,filename = "figures/Simulated data composite figure.png",width = 16, height = 7, dpi=600)
+```
 
 ```{r fig.height = 4, fig.width = 5, out.width = "60%"}
 # prepare true prevalence smoothing times and index vectors for catch and ur samples, for the gaussian process smoother in the model
@@ -448,8 +580,18 @@ underroost.prev$time.idx = sapply(underroost.prev$underroost.times, function(x) 
 
 
 ```{r}
+# export simulated data for use in other analyses
+# save(catch.prev, underroost.prev, sim.prev, total.time, prop.false.neg, beta.var1, beta.var2, beta.var4, time.int, n.samp.underroost, n.samp.catch, file = "underroost_and_catch_simulated_data.Rdata")
+
+
+
+```
+
+
+
+```{r}
 #Ct probabilities
-ct.prob.array = readRDS("ct.prob.array.RDS")
+ct.prob.array = readRDS("ct.prob.39cutoff.array.observed.RDS")
 ```
 
 
@@ -553,25 +695,28 @@ stan.model.prev.Ct =
        functions {
               
               // function to calculate binomial probability density, couldn't find non-log version in stan 
-              real dbin(int npos, int ntotal, real prob){
-                     real probdens;
-                     probdens = choose(ntotal, npos) * prob^npos * (1-prob)^(ntotal-npos);
+              vector dbin(int ntotal, real prob){
+                     vector[ntotal+1] probdens;
+                     for(i in 1:(ntotal+1)) {
+                            probdens[i] = choose((ntotal), (i-1)) * prob^(i-1) * (1-prob)^(ntotal-(i-1));
+                     }
                      return(probdens);
               }
               
               // probability mass function (lpmf)
-              real ct_prob_lpmf(int ct, int nbat, real prev, real[] ct_probs){
+              real ct_prob_lpmf(int ct, int nbat, real prev, vector ct_probs){
                      // first convert prevalence to indexable number of positives in a roundabout way, as stan doesn't accept rounded real values for indexing, and doesn't convert to integers
                      int npos; // variable to index ct_probs
                      real lprob; // likelihood    
-                     real ctprob[nbat+1];       // vector for probabilities
+                     vector[nbat+1] ctprob;       // vector for probabilities
 
                      
                      // calculate P(Ct | prev, nbat) for each npos
                      // n = 1 corresponds with npos = 0
-                     for(n in 1:(nbat+1)) {
-                            ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
-                     }
+                     //for(n in 1:(nbat+1)) {
+                     //       ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
+                     //}
+                     ctprob = dbin(nbat, prev) .* ct_probs[1:(nbat+1)];
                      lprob = log(sum(ctprob));   
 
                      return lprob;
@@ -588,7 +733,7 @@ stan.model.prev.Ct =
               int Ct_prob_Npos;
               int Ct_prob_Ntotal;
               int Ct_prob_Ct;
-              real<lower=0, upper = 1> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
+              real<lower=0> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
               int day_idx_ur[N_ur];           // index in time_int corresponding with the sample day
               
               // catch:    
@@ -606,12 +751,11 @@ stan.model.prev.Ct =
 
        transformed data {
               real delta = 1e-9;  // for smoothing function
-              real<lower=0> ct_array_probs[N_ur,Ct_prob_Npos];
+              vector<lower=0>[Ct_prob_Npos] ct_array_probs[N_ur];
               
               for(i in 1:N_ur){
-                     ct_array_probs[i] = ct_array[,bat_count[i],ct_index[i]];
+                     ct_array_probs[i] = to_vector(ct_array[,bat_count[i],ct_index[i]]);
               }
-              
        }
        
        parameters {
@@ -660,7 +804,7 @@ stan.model.prev.Ct =
        model {
               phi_P_ur ~ gamma(1.2,0.5);       // larger values = lower variance, less heterogeneity in the outcome data
               phi_psi ~ gamma(1.2,0.5);       // larger values = lower variance, less heterogeneity in the outcome data
-              betas ~ normal(0,1);        // slightly informative regularizing prior for regression coefficients individual shedding
+              betas ~ normal(0,5);        // slightly informative regularizing prior for regression coefficients individual shedding
               psi_pop ~ beta(1,3);  // informative prior, all values possible, but lower values more likely
               // elleq ~ lognormal(log(30),log(2));   // values of l less than the shortest time between observations or greater than the total observation time are not identified.
               elleq ~ inv_gamma(2.5,150);   // values of l less than the shortest time between observations or greater than the total observation time are not identified.
@@ -676,6 +820,7 @@ stan.model.prev.Ct =
               //}
               //y_catch ~ bernoulli((1 - psi_ind) * inv_logit(logit_Phi_theta_probit_catch + beta_x_vars_catch));
               //y_catch ~ bernoulli((1 - psi_ind) * inv_logit(logit_Phi_theta_probit_catch + betas * vars_catch));
+              //y_catch ~ bernoulli_logit(y_catch_bern_mu);
               y_catch ~ bernoulli(y_catch_bern_mu);
               
               
@@ -683,6 +828,7 @@ stan.model.prev.Ct =
               //       P_ur[j] ~ beta_proportion(Phi_theta_probit[day_idx_ur[j]] , phi_P_ur);      // beta distribution defined in terms of mean and precision
                      Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array_probs[j]);
               }
+              
               // same as including in for loop but faster:
               P_ur ~ beta_proportion(Phi_theta_probit[day_idx_ur] , phi_P_ur);      // beta distribution defined in terms of mean and precision
        }
@@ -700,6 +846,7 @@ stan.model.prev.Ct =
               theta_smooth = Phi_theta_probit[1:N_times_out];
        }
        "
+
 ```
 
 
@@ -840,7 +987,7 @@ hist(rbeta(10000,mean*phi,(1-mean)*phi))
 
 ```{r}
 
-catch.vars.matrix = matrix(data = c(catch.prev$var1, catch.prev$var3), byrow = F, ncol=2)
+catch.vars.matrix = matrix(data = c(as.numeric(scale(catch.prev$var1))), byrow = F, ncol=1)
 
 ```
 
@@ -871,13 +1018,13 @@ if(run.model.fit.again == T) {
                                     N_times_out = length(time.int),
                                     time_int = time.int),
                         chains = 5,
-                        warmup = 1500,   
-                        iter = 3000,      
+                        warmup = 1000,   
+                        iter = 2000,      
                         cores = 5) 
        
-       saveRDS(model.fit,"stan.model.prev.Ct.fit.20220824.RDS")
+       saveRDS(model.fit,"stan.model.prev.Ct.fit.20220913.RDS")
 } else {
-       model.fit = readRDS("stan.model.prev.Ct.fit.20220824.RDS")
+       model.fit = readRDS("stan.model.prev.Ct.fit.20220913.RDS")
 }
 
 sum.fit = as.data.frame(summary(model.fit)$summary)
@@ -888,6 +1035,12 @@ fit.posterior = as.array(model.fit)
 
 
 ```
+
+
+
+\vspace{20pt}  
+
+
 
 
 ###  Model diagnostics   
@@ -901,7 +1054,7 @@ fit.posterior = as.array(model.fit)
 
 range(sum.fit$Rhat,na.rm=T)  
 
-rownames(sum.fit)[which(sum.fit$Rhat>1.02)]
+rownames(sum.fit)[which(sum.fit$Rhat>1.01)]
 
 mcmc_trace(fit.posterior[,,1:10])
 mcmc_trace(fit.posterior[,,200:210])
@@ -1014,7 +1167,7 @@ ggplot(data = catch.prev, aes(x = catch.times, y = catch.shed.false.neg)) +
        geom_line(data = sim.prev, aes(x = x, y = y.spline), size = 2, color = "black") +
        geom_jitter(aes(fill = as.factor(predicted.vs.real.shedding.status)), height = 0.1, width = 5, alpha = 1, size = 2, shape = 21) +
        scale_y_continuous(breaks = seq(0,1,0.1)) +
-       scale_fill_manual(values = col.6.groups[c(3,1,5)], name = "Status\nTrue - Pred") +
+       scale_fill_manual(values = col.6.groups[c(1,4,2,5,3,6)], name = "Status\nTrue - Pred") +
        #scale_y_continuous(limits = c(0,1)) +
        ylab("Prevalence") +
        xlab("Time") +
@@ -1169,7 +1322,7 @@ plot1 /
 
 \vspace{40pt}
 
-Individual covariate coefficients.    
+**Individual covariate coefficients.**    
 
 
 
@@ -1181,11 +1334,12 @@ True coefficient var 1 = `r beta.var1`.
 
 ```{r fig.height = 4, fig.width = 5, out.width = "40%"}
 
-plot.df = data.frame(x = params[,"betas.1"])
+plot.df = data.frame(x = params[,"betas"])
 
 
-ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
-       geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+ggplot() + 
+       geom_density_ridges_gradient(data = plot.df, aes(x = x, y = 0, fill = stat(quantile)), quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+       geom_point(data = data.frame(x = beta.var1, y = 0), aes(x=x, y=y), col = "black", size = 4) +
        scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
        ylab("Posterior density") +
        xlab("Effect estimate") +
@@ -1196,29 +1350,6 @@ ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) +
 
 ```
 
-
-
-\vspace{50pt}
-
-Effect estimate posterior density with 95% CrI, var 3:      
-True coefficient var 3 = 0 (random).         
-
-```{r fig.height = 4, fig.width = 5, out.width = "40%"}
-
-plot.df = data.frame(x = params[,"betas.2"])
-
-
-ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
-       geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
-       scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
-       ylab("Posterior density") +
-       xlab("Effect estimate") +
-       ggtitle("") +
-       theme_bw() +
-       theme.settings
-
-
-```
 
 
 
@@ -1444,6 +1575,10 @@ ggplot(data = posbat.pred.df, aes(x = n.bats, y = est.dist)) +
        scale_x_continuous(breaks = seq(0,10,1)) +
        theme_bw() +
        theme.settings
+
+
+# posbat.pred.df[which(posbat.pred.df$n.bats>6),]
+# underroost.prev[which(underroost.prev$n.bats.total>6),]
 ```
 
 
@@ -1506,7 +1641,7 @@ What happens to predicting individual shedding status?
 
 ```{r}
 
-catch.vars.matrix = matrix(data = c(catch.prev$var3), byrow = F, ncol=1)
+catch.vars.matrix = matrix(data = c(as.numeric(scale(catch.prev$var3))), byrow = F, ncol=1)
 
 ```
 
@@ -1536,8 +1671,8 @@ if(run.model.fit.again == T) {
                                     N_times_out = length(time.int),
                                     time_int = time.int),
                         chains = 5,
-                        warmup = 5000,   
-                        iter = 15000,      
+                        warmup = 1000,   
+                        iter = 2000,      
                         cores = 5) 
        saveRDS(model.fit,"stan.model.prev.Ct.fit2.20220805.RDS")
 } else {
@@ -1680,7 +1815,7 @@ True value = `r prop.false.neg`.
 
 ```{r fig.height = 4, fig.width = 5, out.width = "40%"}
 
-plot.df = data.frame(x = params[,"psi"])
+plot.df = data.frame(x = params[,"psi_pop"])
 
 
 ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
@@ -1705,15 +1840,16 @@ Individual covariate coefficient.
 \vspace{10pt}
 
 Effect estimate posterior density with 95% CrI, var 3:      
-True coefficient var 3 = 0 (random).         
+True coefficient var 3 = `r beta.var3`.           
 
 ```{r fig.height = 4, fig.width = 5, out.width = "40%"}
 
 plot.df = data.frame(x = params[,"betas"])
 
 
-ggplot(plot.df, aes(x = x, y = 0, fill = stat(quantile))) + 
-       geom_density_ridges_gradient(quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+ggplot() + 
+       geom_density_ridges_gradient(data = plot.df, aes(x = x, y = 0, fill = stat(quantile)), quantile_lines = TRUE, quantile_fun = hdi, vline_linetype = 2) +
+       geom_point(data = data.frame(x = beta.var3, y = 0), aes(x=x, y=y), col = "black", size = 4) +
        scale_fill_manual(values = c("transparent", col.no.groups, "transparent"), guide = "none") +
        ylab("Posterior density") +
        xlab("Effect estimate") +
@@ -2586,25 +2722,28 @@ stan.model.prev.Ct.with.missing.data =
        functions {
               
               // function to calculate binomial probability density, couldn't find non-log version in stan 
-              real dbin(int npos, int ntotal, real prob){
-                     real probdens;
-                     probdens = choose(ntotal, npos) * prob^npos * (1-prob)^(ntotal-npos);
+              vector dbin(int ntotal, real prob){
+                     vector[ntotal+1] probdens;
+                     for(i in 1:(ntotal+1)) {
+                            probdens[i] = choose((ntotal), (i-1)) * prob^(i-1) * (1-prob)^(ntotal-(i-1));
+                     }
                      return(probdens);
               }
               
               // probability mass function (lpmf)
-              real ct_prob_lpmf(int ct, int nbat, real prev, real[] ct_probs){
+              real ct_prob_lpmf(int ct, int nbat, real prev, vector ct_probs){
                      // first convert prevalence to indexable number of positives in a roundabout way, as stan doesn't accept rounded real values for indexing, and doesn't convert to integers
                      int npos; // variable to index ct_probs
                      real lprob; // likelihood    
-                     real ctprob[nbat+1];       // vector for probabilities
+                     vector[nbat+1] ctprob;       // vector for probabilities
 
                      
                      // calculate P(Ct | prev, nbat) for each npos
                      // n = 1 corresponds with npos = 0
-                     for(n in 1:(nbat+1)) {
-                            ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
-                     }
+                     //for(n in 1:(nbat+1)) {
+                     //       ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
+                     //}
+                     ctprob = dbin(nbat, prev) .* ct_probs[1:(nbat+1)];
                      lprob = log(sum(ctprob));   
 
                      return lprob;
@@ -2646,6 +2785,11 @@ stan.model.prev.Ct.with.missing.data =
 
        transformed data {
               real delta = 1e-9;  // for smoothing function
+              vector<lower=0>[Ct_prob_Npos] ct_array_probs[N_ur];
+              
+              for(i in 1:N_ur){
+                     ct_array_probs[i] = to_vector(ct_array[,bat_count[i],ct_index[i]]);
+              }
               
               // for missing data:
               int<lower=0, upper=1> y_catch_complete[N_catch_complete] = y_catch[idx_catch_complete];               // shedding status of each individual
@@ -2729,7 +2873,7 @@ stan.model.prev.Ct.with.missing.data =
               
               
               for(j in 1:N_ur) {
-                     Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array[,bat_count[j],ct_index[j]]);
+                     Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array_probs[j]);
               }
               
               P_ur ~ beta_proportion(Phi_theta_probit[day_idx_ur] , phi_P_ur);      // beta distribution defined in terms of mean and precision
@@ -3335,30 +3479,32 @@ stan.model.prev.Ct.with.missing.data =
        functions {
               
               // function to calculate binomial probability density, couldn't find non-log version in stan 
-              real dbin(int npos, int ntotal, real prob){
-                     real probdens;
-                     probdens = choose(ntotal, npos) * prob^npos * (1-prob)^(ntotal-npos);
+              vector dbin(int ntotal, real prob){
+                     vector[ntotal+1] probdens;
+                     for(i in 1:(ntotal+1)) {
+                            probdens[i] = choose((ntotal), (i-1)) * prob^(i-1) * (1-prob)^(ntotal-(i-1));
+                     }
                      return(probdens);
               }
               
               // probability mass function (lpmf)
-              real ct_prob_lpmf(int ct, int nbat, real prev, real[] ct_probs){
+              real ct_prob_lpmf(int ct, int nbat, real prev, vector ct_probs){
                      // first convert prevalence to indexable number of positives in a roundabout way, as stan doesn't accept rounded real values for indexing, and doesn't convert to integers
                      int npos; // variable to index ct_probs
                      real lprob; // likelihood    
-                     real ctprob[nbat+1];       // vector for probabilities
+                     vector[nbat+1] ctprob;       // vector for probabilities
 
                      
                      // calculate P(Ct | prev, nbat) for each npos
                      // n = 1 corresponds with npos = 0
-                     for(n in 1:(nbat+1)) {
-                            ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
-                     }
+                     //for(n in 1:(nbat+1)) {
+                     //       ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
+                     //}
+                     ctprob = dbin(nbat, prev) .* ct_probs[1:(nbat+1)];
                      lprob = log(sum(ctprob));   
 
                      return lprob;
               }
-              
        }
        
        data {
@@ -3370,7 +3516,7 @@ stan.model.prev.Ct.with.missing.data =
               int Ct_prob_Npos;
               int Ct_prob_Ntotal;
               int Ct_prob_Ct;
-              real<lower=0, upper = 1> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
+              real<lower=0> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
               int day_idx_ur[N_ur];           // index in time_int corresponding with the sample day
               
               // catch:    
@@ -3399,11 +3545,16 @@ stan.model.prev.Ct.with.missing.data =
 
        transformed data {
               real delta = 1e-9;  // for smoothing function
+              vector<lower=0>[Ct_prob_Npos] ct_array_probs[N_ur];
               
               // for missing data:
               int<lower=0, upper=1> y_catch_complete[N_catch_complete] = y_catch[idx_catch_complete];               // shedding status of each individual
               int<lower=0, upper=1> y_catch_miss_1[N_miss_1] = y_catch[idx_catch_miss_1];               // shedding status of each individual
               int<lower=0, upper=1> y_catch_miss_2[N_miss_2] = y_catch[idx_catch_miss_2];               // shedding status of each individual
+              
+              for(i in 1:N_ur){
+                     ct_array_probs[i] = to_vector(ct_array[,bat_count[i],ct_index[i]]);
+              }
               
        }
        
@@ -3494,7 +3645,7 @@ stan.model.prev.Ct.with.missing.data =
               
               
               for(j in 1:N_ur) {
-                     Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array[,bat_count[j],ct_index[j]]);
+                     Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array_probs[j]);
               }
               
               P_ur ~ beta_proportion(Phi_theta_probit[day_idx_ur] , phi_P_ur);      // beta distribution defined in terms of mean and precision
@@ -4091,7 +4242,7 @@ cols.with.missing.data = unique(apply(catch.vars.matrix[rows.with.missing.data,]
 idx_vars_miss_1 = 2        # index of the miss_1 column (the variable with missing data)  
 N_var_miss_1 = length(idx_vars_miss_1)
 idx_catch_miss_1 = which(apply(catch.vars.matrix,MARGIN = 1, function(x) x[idx_vars_miss_1]==Inf & sum(x[-idx_vars_miss_1]==Inf)==0))
-  # indexes of missing data points in miss_1
+# indexes of missing data points in miss_1
 N_miss_1 = length(idx_catch_miss_1)    # number of missing data points in the first covariate (miss_1) that has missing data
 idx_vars_excl_miss_1 = (1:ncol(catch.vars.matrix))[-idx_vars_miss_1]    # indexes (column numbers in catch.vars.matrix) of all variables except miss_1
 
@@ -4100,7 +4251,7 @@ idx_vars_excl_miss_1 = (1:ncol(catch.vars.matrix))[-idx_vars_miss_1]    # indexe
 idx_vars_miss_2 = 3        # index of the miss_2 column (the variable with missing data)  
 N_var_miss_2 = length(idx_vars_miss_2)
 idx_catch_miss_2 = which(apply(catch.vars.matrix,MARGIN = 1, function(x) x[idx_vars_miss_2]==Inf & sum(x[-idx_vars_miss_2]==Inf)==0))
-  # indexes of missing data points in miss_2
+# indexes of missing data points in miss_2
 N_miss_2 = length(idx_catch_miss_2)    # number of missing data points in the first covariate (miss_2) that has missing data
 idx_vars_excl_miss_2 = (1:ncol(catch.vars.matrix))[-idx_vars_miss_2]    # indexes (column numbers in catch.vars.matrix) of all variables except miss_2
 
@@ -4129,25 +4280,28 @@ stan.model.prev.Ct.with.missing.data =
        functions {
               
               // function to calculate binomial probability density, couldn't find non-log version in stan 
-              real dbin(int npos, int ntotal, real prob){
-                     real probdens;
-                     probdens = choose(ntotal, npos) * prob^npos * (1-prob)^(ntotal-npos);
+              vector dbin(int ntotal, real prob){
+                     vector[ntotal+1] probdens;
+                     for(i in 1:(ntotal+1)) {
+                            probdens[i] = choose((ntotal), (i-1)) * prob^(i-1) * (1-prob)^(ntotal-(i-1));
+                     }
                      return(probdens);
               }
               
               // probability mass function (lpmf)
-              real ct_prob_lpmf(int ct, int nbat, real prev, real[] ct_probs){
+              real ct_prob_lpmf(int ct, int nbat, real prev, vector ct_probs){
                      // first convert prevalence to indexable number of positives in a roundabout way, as stan doesn't accept rounded real values for indexing, and doesn't convert to integers
                      int npos; // variable to index ct_probs
                      real lprob; // likelihood    
-                     real ctprob[nbat+1];       // vector for probabilities
+                     vector[nbat+1] ctprob;       // vector for probabilities
 
                      
                      // calculate P(Ct | prev, nbat) for each npos
                      // n = 1 corresponds with npos = 0
-                     for(n in 1:(nbat+1)) {
-                            ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
-                     }
+                     //for(n in 1:(nbat+1)) {
+                     //       ctprob[n] = dbin(n-1, nbat, prev) * ct_probs[n];
+                     //}
+                     ctprob = dbin(nbat, prev) .* ct_probs[1:(nbat+1)];
                      lprob = log(sum(ctprob));   
 
                      return lprob;
@@ -4164,7 +4318,7 @@ stan.model.prev.Ct.with.missing.data =
               int Ct_prob_Npos;
               int Ct_prob_Ntotal;
               int Ct_prob_Ct;
-              real<lower=0, upper = 1> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
+              real<lower=0> ct_array[Ct_prob_Npos,Ct_prob_Ntotal,Ct_prob_Ct];        // array P(Npos|Ct,Ntotal)
               int day_idx_ur[N_ur];           // index in time_int corresponding with the sample day
               
               // catch:    
@@ -4199,6 +4353,7 @@ stan.model.prev.Ct.with.missing.data =
 
        transformed data {
               real delta = 1e-9;  // for smoothing function
+              vector<lower=0>[Ct_prob_Npos] ct_array_probs[N_ur];
               
               // for missing data:
               int<lower=0, upper=1> y_catch_complete[N_catch_complete] = y_catch[idx_catch_complete];               // shedding status of each individual
@@ -4206,6 +4361,9 @@ stan.model.prev.Ct.with.missing.data =
               int<lower=0, upper=1> y_catch_miss_2[N_miss_2] = y_catch[idx_catch_miss_2];               // shedding status of each individual
               int<lower=0, upper=1> y_catch_miss_1_2[N_miss_1_2] = y_catch[idx_catch_miss_1_2];               // shedding status of each individual
               
+              for(i in 1:N_ur){
+                     ct_array_probs[i] = to_vector(ct_array[,bat_count[i],ct_index[i]]);
+              }
        }
        
        parameters {
@@ -4306,7 +4464,7 @@ stan.model.prev.Ct.with.missing.data =
               
               
               for(j in 1:N_ur) {
-                     Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array[,bat_count[j],ct_index[j]]);
+                    Ct[j] ~ ct_prob(bat_count[j], P_ur[j], ct_array_probs[j]);
               }
               
               P_ur ~ beta_proportion(Phi_theta_probit[day_idx_ur] , phi_P_ur);      // beta distribution defined in terms of mean and precision
